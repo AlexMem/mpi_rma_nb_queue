@@ -74,6 +74,10 @@ StyleCopReport.xml
 *.pgd
 *.rsp
 *.sbr
+*.sln
+*.vcxproj
+*.filters
+*.user
 *.tlb
 *.tli
 *.tlh
