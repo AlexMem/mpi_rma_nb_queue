@@ -6,11 +6,14 @@
 #define CODE_ERROR 1
 #define CODE_DATA_BUFFER_FULL 2
 #define CODE_DATA_BUFFER_EMPTY 3
+#define CODE_NO_HEAD 4
+#define CODE_NO_TAIL 5
 
 #define UNKNOWN_RANK -1
 #define MAIN_RANK 0
+#define SENTINEL_RANK 0
 
-#define UNKNOWN_NEXT_NODE_INFO -1LL // rank == -1, position == -1
+#define UNDEFINED_NODE_INFO -1LL // rank == -1, position == -1
 
 #define NODE_FREE 0
 #define NODE_ACQUIRED 1
@@ -22,8 +25,8 @@ typedef union {
 	struct {
 		int rank;
 		int position;
-	} info;
-	long long val;
+	} parsed;
+	long long raw;
 } u_node_info_t;
 
 typedef struct {
@@ -32,7 +35,8 @@ typedef struct {
 } rma_nb_queue_state_t;
 
 typedef struct {
-	u_node_info_t next_info;
+	u_node_info_t next_node_info;
+	u_node_info_t info;
 	val_t value;
 	int state;
 	double ts;
@@ -67,9 +71,8 @@ typedef struct {
 
 
 int rma_nb_queue_init(rma_nb_queue_t **queue, int size, MPI_Comm comm);
+void rma_nb_queue_free(rma_nb_queue_t* queue);
 
 int enqueue(rma_nb_queue_t *queue, val_t value);
 
 int dequeue(rma_nb_queue_t* queue, val_t *value);
-
-void rma_nb_queue_free(rma_nb_queue_t* queue);
