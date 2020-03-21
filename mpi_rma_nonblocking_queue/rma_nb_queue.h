@@ -4,12 +4,13 @@
 
 #define CODE_SUCCESS 0
 #define CODE_ERROR 1
+#define CODE_PARTLY_SUCCESS 0
 #define CODE_DATA_BUFFER_FULL 2
 #define CODE_DATA_BUFFER_EMPTY 3
 #define CODE_NO_HEAD 4
 #define CODE_NO_TAIL 5
 
-#define UNKNOWN_RANK -1
+#define UNDEFINED_RANK -1
 #define MAIN_RANK 0
 #define SENTINEL_RANK 0
 
@@ -32,7 +33,7 @@ typedef union {
 typedef struct {
 	u_node_info_t head;
 	u_node_info_t tail;
-} rma_nb_queue_state_t;
+} queue_state_t;
 
 typedef struct {
 	u_node_info_t next_node_info;
@@ -52,27 +53,50 @@ typedef struct {
 	MPI_Aint datadisp_local;    /* Address of data buffer (local) */
 	MPI_Aint* datadisp;         /* Address of data buffer (all processes) */
 
-	MPI_Aint statedisp;			/* Address of queue state struct in process 0 */
+	queue_state_t queue_state;	/* Contains info about head and tail */
+	MPI_Aint statedisp_local;	/* Address of queue state struct (local) */
+	MPI_Aint* statedisp;		/* Address of queue state struct (all processes) */
+
+	elem_t sentinel;			/* Sentinel element (MAIN_RANK only) */
+	MPI_Aint sentineldisp;		/* Address of sentinel in main process */
 
 	MPI_Win win;                /* RMA access window */
 	MPI_Comm comm;              /* Communicator for the queue distribution */
-	int nproc;                  /* Number of processes in communicator */
+	int n_proc;                  /* Number of processes in communicator */
 	double ts_offset;           /* Timestamp offset from 0 process */
 } rma_nb_queue_t;
 
 typedef struct {
-	int elem_value_offset;
-	int elem_state_offset;
-	int elem_next_info_offset;
-	int elem_ts_offset;
-	int queue_state_tail_offset;
+	int elem_value;
+	int elem_state;
+	int elem_next_node_info;
+	int elem_info;
+	int elem_ts;
+	int qs_head;	// queue_state head
+	int qs_tail;	// queue_state tail
 } offsets_t;
 
+typedef struct {
+	int* nodes;
+	int n_proc;
+} rand_provider_t;
+
+typedef struct bcast_meta_t {
+	int (*bcast_method) (rma_nb_queue_t* queue, int target, elem_t* elem, bcast_meta_t* meta);
+
+	bool should_update_head;
+	bool should_update_tail;
+
+	queue_state_t queue_state;
+	u_node_info_t head_info;
+	u_node_info_t tail_info;
+	elem_t head;
+	elem_t tail;
+} bcast_meta_t;
 
 
-int rma_nb_queue_init(rma_nb_queue_t **queue, int size, MPI_Comm comm);
+int rma_nb_queue_init(rma_nb_queue_t** queue, int size, MPI_Comm comm);
 void rma_nb_queue_free(rma_nb_queue_t* queue);
 
-int enqueue(rma_nb_queue_t *queue, val_t value);
-
-int dequeue(rma_nb_queue_t* queue, val_t *value);
+int enqueue(rma_nb_queue_t* queue, val_t value);
+int dequeue(rma_nb_queue_t* queue, val_t* value);
