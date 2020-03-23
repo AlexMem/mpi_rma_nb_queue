@@ -10,7 +10,7 @@
 #include "rma_nb_queue.h"
 //#include "utils.h"
 
-#define USE_DEBUG 0
+#define USE_DEBUG 1
 
 void print(elem_t elem);
 
@@ -51,6 +51,14 @@ void error_msg(const char* msg, int _errno) {
 	fprintf(stderr, "\n");
 }
 
+void sentinel_init(elem_t* sentinel) {
+	sentinel->ts = 0.0;
+	sentinel->value = 0;
+	sentinel->state = NODE_ACQUIRED;
+	sentinel->info.parsed.rank = MAIN_RANK;
+	sentinel->info.parsed.position = -1;
+	sentinel->next_node_info.raw = UNDEFINED_NODE_INFO;
+}
 void offsets_init(void) {
 	offsets.elem_value = offsetof(elem_t, value);
 	offsets.elem_state = offsetof(elem_t, state);
@@ -103,15 +111,14 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size, MPI_Comm comm) {
 	MPI_Win_create_dynamic(MPI_INFO_NULL, (*queue)->comm, &(*queue)->win);
 	MPI_Win_attach((*queue)->win, *queue, sizeof(rma_nb_queue_t));
 	MPI_Win_attach((*queue)->win, (*queue)->data, data_buffer_size);
-
+	
 	(*queue)->queue_state.head.raw = UNDEFINED_NODE_INFO;
 	(*queue)->queue_state.tail.raw = UNDEFINED_NODE_INFO;
 	MPI_Get_address(&(*queue)->queue_state, &(*queue)->statedisp_local);
-	MPI_Win_attach((*queue)->win, &(*queue)->queue_state, sizeof(queue_state_t));
 
 	if (myrank == MAIN_RANK) {
+		sentinel_init(&(*queue)->sentinel);
 		MPI_Get_address(&(*queue)->sentinel, &(*queue)->sentineldisp);
-		MPI_Win_attach((*queue)->win, &(*queue)->sentinel, sizeof(elem_t));
 	}
 
 	if (disps_init(*queue) != CODE_SUCCESS) {
@@ -583,8 +590,23 @@ start:
 	}
 }
 
+void print(queue_state_t queue_state) {
+	std::cout
+		<< "head (" << queue_state.head.parsed.rank << ", "
+					<< queue_state.head.parsed.position 
+		<< ")\ttail (" << queue_state.tail.parsed.rank << ", "
+					   << queue_state.tail.parsed.position << ")"
+		<< std::endl;
+}
 void print(elem_t elem) {
-	std::cout << "rank " << myrank << ":\t" << elem.ts << "\t" << elem.value << "\t" << elem.state << "\t(" << elem.next_node_info.parsed.rank << ", " << elem.next_node_info.parsed.position << ")" << std::endl;
+	std::cout
+		<< elem.ts << "\t"
+		<< elem.value << "\t"
+		<< elem.state << "\tcurrent ("
+		<< elem.info.parsed.rank << ", "
+		<< elem.info.parsed.position << ")\tnext ("
+		<< elem.next_node_info.parsed.rank << ", "
+		<< elem.next_node_info.parsed.position << ")\n";
 }
 void print(rma_nb_queue_t* queue) {
 	elem_t elem;
@@ -609,6 +631,45 @@ void print(rma_nb_queue_t* queue) {
 	}
 
 	end_epoch_all(queue->win);
+}
+void print_attributes(rma_nb_queue_t* queue) {
+	std::cout << "rank " << myrank << " queue attributes:\n";
+	
+	std::cout << "\twindow:\t\t" << queue->win << "\n";
+	
+	std::cout << "\tbase_dl:\t" << queue->basedisp_local << "\n";
+	std::cout << "\tbase_ds:\t";
+	for (int i = 0; i < queue->n_proc; ++i) {
+		std::cout << queue->basedisp[i] << " ";
+	}
+	
+	std::cout << "\n\tdata_dl:\t" << queue->datadisp_local << "\n";
+	std::cout << "\tdata_ds:\t";
+	for (int i = 0; i < queue->n_proc; ++i) {
+		std::cout << queue->datadisp[i] << " ";
+	}
+	std::cout << "\n\tdata:\t\t" << queue->data << "\n";
+	std::cout << "\tdata_ptr:\t" << queue->data_ptr << "\n";
+	std::cout << "\tdata_size:\t" << queue->data_size << "\n";
+	
+	std::cout << "\tstate_dl:\t" << queue->statedisp_local << "\n";
+	std::cout << "\tstate_ds:\t";
+	for (int i = 0; i < queue->n_proc; ++i) {
+		std::cout << queue->statedisp[i] << " ";
+	}
+	
+	std::cout << "\n\tsent_d:\t\t" << queue->sentineldisp << "\n";
+	if (myrank == MAIN_RANK) {
+		std::cout << "\tsentinel:\n\t\t";
+		print(queue->sentinel);
+	}
+
+	std::cout << "\tqueue_state:\t";
+	print(queue->queue_state);
+	
+	std::cout << "\tcomm:\t" << queue->comm << "\n";
+	std::cout << "\tn_proc:\t" << queue->n_proc << "\n";
+	std::cout << "\tts_offset:\t" << queue->ts_offset << "\n";
 }
 void print(rand_provider_t* provider) {
 	std::cout << "{ ";
@@ -671,10 +732,27 @@ void test_get_next_node_rand() {
 
 	rand_provider_free(&provider);
 }
-void test_displacements(int argc, char** argv) {
-
+void test_queue_init(int argc, char** argv) {
+	int comm_size;
+	int data_size = 7;
 
 	MPI_Init(&argc, &argv);
+	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+	MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
+
+	srand(time(0) * myrank);
+
+	rma_nb_queue_t* queue;
+	rma_nb_queue_init(&queue, data_size, MPI_COMM_WORLD);
+
+	MPI_Barrier(queue->comm);
+	for (int i = 0; i < queue->n_proc; ++i) {
+		if (i == myrank) {
+			print_attributes(queue);
+		}
+		MPI_Barrier(queue->comm);
+	}
+	MPI_Barrier(queue->comm);
 
 	MPI_Finalize();
 }
@@ -736,7 +814,7 @@ void test1(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
-	
+	test_queue_init(argc, argv);
 
 	return 0;
 }
