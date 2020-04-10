@@ -4,11 +4,11 @@
 
 #define CODE_SUCCESS 0
 #define CODE_ERROR 1
-#define CODE_PARTLY_SUCCESS 0
-#define CODE_DATA_BUFFER_FULL 2
-#define CODE_DATA_BUFFER_EMPTY 3
-#define CODE_NO_HEAD 4
-#define CODE_NO_TAIL 5
+#define CODE_PARTLY_SUCCESS 2
+#define CODE_DATA_BUFFER_FULL 3
+#define CODE_DATA_BUFFER_EMPTY 4
+#define CODE_NO_HEAD 5
+#define CODE_NO_TAIL 6
 
 #define UNDEFINED_RANK -1
 #define MAIN_RANK 0
@@ -95,7 +95,7 @@ typedef struct bcast_meta_t {
 } bcast_meta_t;
 
 
-int rma_nb_queue_init(rma_nb_queue_t** queue, int size, MPI_Comm comm);
+int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm);
 void rma_nb_queue_free(rma_nb_queue_t* queue);
 
 int enqueue(rma_nb_queue_t* queue, val_t value);
