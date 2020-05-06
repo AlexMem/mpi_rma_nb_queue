@@ -7,12 +7,11 @@
 #define CODE_PARTLY_SUCCESS 2
 #define CODE_DATA_BUFFER_FULL 3
 #define CODE_DATA_BUFFER_EMPTY 4
-#define CODE_NO_HEAD 5
+#define CODE_QUEUE_EMPTY 5
 #define CODE_NO_TAIL 6
 
 #define UNDEFINED_RANK -1
 #define MAIN_RANK 0
-#define SENTINEL_RANK 0
 
 #define UNDEFINED_NODE_INFO -1LL // rank == -1, position == -1
 

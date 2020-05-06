@@ -14,11 +14,11 @@
 #include "rma_nb_queue.h"
 //#include "utils.h"
 
-#define USE_DEBUG 0
+#define USE_DEBUG 1
 
 #define LOG_PRINT_CONSOLE 0b10
 #define LOG_PRINT_FILE 0b01
-#define LOG_PRINT_MODE 0b01 // 0b10 - console only, 0b01 - file (one per process) only, 0b11 - console and file 
+#define LOG_PRINT_MODE 0b01 // 0b10 - console only, 0b01 - file (one per process) only, 0b11 - console and file
 
 std::string print(u_node_info_t info);
 std::string print(elem_t elem);
@@ -29,6 +29,11 @@ std::ostringstream l_str;
 
 int myrank;
 offsets_t offsets;
+
+typedef struct {
+	unsigned int added;
+	unsigned int deleted;
+} test_result;
 
 void log_init(int rank) {
 	if (!(LOG_PRINT_MODE & LOG_PRINT_FILE)) return;
@@ -43,7 +48,7 @@ void log_(std::string content, int mode) {
 	if (mode & LOG_PRINT_CONSOLE) {
 		std::cout << "rank " << myrank << ": " << content;
 	}
-		
+
 	if (mode & LOG_PRINT_FILE) {
 		if (log_file.is_open()) {
 			log_file << "rank " << myrank << ": " << content;
@@ -69,7 +74,6 @@ void log_close() {
 
 void g_pause() {
 	if (myrank == MAIN_RANK) {
-		// system("pause");
 		std::cin.get();
 	}
 	MPI_Barrier(MPI_COMM_WORLD);
@@ -152,7 +156,7 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 	MPI_Win_create_dynamic(MPI_INFO_NULL, (*queue)->comm, &(*queue)->win);
 	MPI_Win_attach((*queue)->win, *queue, sizeof(rma_nb_queue_t));
 	MPI_Win_attach((*queue)->win, (*queue)->data, data_buffer_size);
-	
+
 	(*queue)->queue_state.head.raw = UNDEFINED_NODE_INFO;
 	(*queue)->queue_state.tail.raw = UNDEFINED_NODE_INFO;
 	MPI_Get_address(&(*queue)->queue_state, &(*queue)->statedisp_local);
@@ -224,9 +228,9 @@ int get_queue_state(rma_nb_queue_t* queue, int target, queue_state_t* queue_stat
 	}
 }
 int get_head_info(rma_nb_queue_t* queue, int target, u_node_info_t* head_info) {
-	if (/*target == myrank*/0) {
+	if (target == myrank) {
 		*head_info = queue->queue_state.head;
-		
+
 		if (USE_DEBUG) {
 			l_str << "got head info [local] (" << head_info->parsed.rank << ", " << head_info->parsed.position << ": " << head_info->raw << ")" << std::endl;
 			log_(l_str);
@@ -237,13 +241,13 @@ int get_head_info(rma_nb_queue_t* queue, int target, u_node_info_t* head_info) {
 			l_str << "trying get head info on rank " << target << ", disp " << MPI_Aint_add(queue->statedisp[target], offsets.qs_head) << std::endl;
 			log_(l_str);
 		}
-		
+
 		int op_res = MPI_Get_accumulate(head_info, sizeof(queue_state_t), MPI_BYTE,
 										head_info, sizeof(queue_state_t), MPI_BYTE,
 										target, MPI_Aint_add(queue->statedisp[target], offsets.qs_head), sizeof(queue_state_t), MPI_BYTE,
 										MPI_NO_OP, queue->win);
 		MPI_Win_flush(target, queue->win);
-		
+
 		if (USE_DEBUG) {
 			l_str << "\tgot head info (" << head_info->parsed.rank << ", " << head_info->parsed.position << ": " << head_info->raw << ")" << std::endl;
 			log_(l_str);
@@ -252,7 +256,7 @@ int get_head_info(rma_nb_queue_t* queue, int target, u_node_info_t* head_info) {
 	}
 }
 int get_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t* tail_info) {
-	if (/*target == myrank*/0) {
+	if (target == myrank) {
 		*tail_info = queue->queue_state.tail;
 
 		if (USE_DEBUG) {
@@ -265,13 +269,13 @@ int get_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t* tail_info) {
 			l_str << "trying get tail info on rank " << target << ", disp " << MPI_Aint_add(queue->statedisp[target], offsets.qs_tail) << std::endl;
 			log_(l_str);
 		}
-		
+
 		int op_res = MPI_Get_accumulate(tail_info, sizeof(queue_state_t), MPI_BYTE,
 										tail_info, sizeof(queue_state_t), MPI_BYTE,
 										target, MPI_Aint_add(queue->statedisp[target], offsets.qs_tail), sizeof(queue_state_t), MPI_BYTE,
 										MPI_NO_OP, queue->win);
 		MPI_Win_flush(target, queue->win);
-		
+
 		if (USE_DEBUG) {
 			l_str << "\tgot tail info (" << tail_info->parsed.rank << ", " << tail_info->parsed.position << ": " << tail_info->raw << ")" << std::endl;
 			log_(l_str);
@@ -288,7 +292,7 @@ int set_head_info(rma_nb_queue_t* queue, int target, u_node_info_t new_head_info
 
 	op_res = CAS(&new_head_info, &prev_head_info, target,
 				 MPI_Aint_add(queue->statedisp[target], offsets.qs_head), queue->win);
-	
+
 	if (USE_DEBUG) {
 		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set head info in target " << target << " to " << print(new_head_info) << std::endl;
 		log_(l_str);
@@ -327,7 +331,7 @@ int get_elem(rma_nb_queue_t* queue, u_node_info_t elem_info, elem_t* elem) {
 		l_str << "trying get elem on rank " << elem_info.parsed.rank << ", disp " << get_elem_disp(queue, elem_info) << std::endl;
 		log_(l_str);
 	}
-	
+
 	op_res = MPI_Get_accumulate(elem, sizeof(elem_t), MPI_BYTE,
 								elem, sizeof(elem_t), MPI_BYTE,
 								elem_info.parsed.rank, get_elem_disp(queue, elem_info), sizeof(elem_t), MPI_BYTE,
@@ -335,7 +339,7 @@ int get_elem(rma_nb_queue_t* queue, u_node_info_t elem_info, elem_t* elem) {
 	MPI_Win_flush(elem_info.parsed.rank, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "\t" << op_res << " got elem " << print(*elem);
+		l_str << "\t" << op_res << " got elem " << print(*elem) << std::endl;
 		log_(l_str);
 	}
 	//g_pause();
@@ -347,7 +351,7 @@ int get_sentinel(rma_nb_queue_t* queue, elem_t* sent) {
 		l_str << "trying get sentinel on disp " << queue->sentineldisp << std::endl;
 		log_(l_str);
 	}
-	
+
 	op_res = MPI_Get_accumulate(sent, sizeof(elem_t), MPI_BYTE,
 								sent, sizeof(elem_t), MPI_BYTE,
 								MAIN_RANK, queue->sentineldisp, sizeof(elem_t), MPI_BYTE,
@@ -367,10 +371,10 @@ int set_sentinel_next_node_info(rma_nb_queue_t* queue, u_node_info_t sentinel_in
 		l_str << "trying to set sentinel's next node info to " << print(next_node_info) << ", expected " << print(expected_node_info) << std::endl;
 		log_(l_str);
 	}
-	
+
 	op_res = CAS(&next_node_info, &expected_node_info, sentinel_info.parsed.rank,
 				 MPI_Aint_add(queue->sentineldisp, offsets.elem_next_node_info), queue->win);
-	
+
 	if (USE_DEBUG) {
 		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set sentinel's next node info to " << print(next_node_info) << std::endl;
 		log_(l_str);
@@ -383,10 +387,10 @@ int set_next_node_info(rma_nb_queue_t* queue, u_node_info_t target_elem_info, u_
 		l_str << "trying to set elem " << print(target_elem_info) << " next node info to " << print(next_node_info) << ", expected " << print(expected_node_info) << std::endl;
 		log_(l_str);
 	}
-	
+
 	op_res = CAS(&next_node_info, &expected_node_info, target_elem_info.parsed.rank,
 				 get_elem_next_node_info_disp(queue, target_elem_info), queue->win);
-	
+
 	if (USE_DEBUG) {
 		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set elem " << print(target_elem_info) << " next node info to " << print(next_node_info) << std::endl;
 		log_(l_str);
@@ -399,10 +403,10 @@ int set_state(rma_nb_queue_t* queue, u_node_info_t target_elem_info, int state, 
 		l_str << "trying to set elem " << print(target_elem_info) << " state to " << state << ", expected " << expected_state << std::endl;
 		log_(l_str);
 	}
-	
+
 	op_res = CAS(&state, &expected_state, target_elem_info.parsed.rank,
 				 get_elem_state_disp(queue, target_elem_info), queue->win);
-	
+
 	if (USE_DEBUG) {
 		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set elem " << print(target_elem_info) << " state to " << state << std::endl;
 		log_(l_str);
@@ -547,7 +551,7 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 	rand_provider_init(&provider, queue->n_proc);
 
 	if (USE_DEBUG) {
-		l_str << "bcasting elem " << print(*elem);
+		l_str << "bcasting elem " << print(*elem) << std::endl;
 		log_(l_str);
 	}
 
@@ -557,7 +561,7 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 			l_str << "bcasting to priority " << priority_rank << std::endl;
 			log_(l_str);
 		}
-		
+
 		op_res = meta->bcast_method(queue, priority_rank, elem, meta);
 		if (op_res == CODE_ERROR) {
 			rand_provider_free(&provider);
@@ -605,7 +609,7 @@ int bcast_head_info(rma_nb_queue_t* queue, elem_t elem, int priority_rank) {
 	meta.bcast_method = bcastpart_head_info;
 
 	if (USE_DEBUG) {
-		l_str << "START BCAST (H)" << std::endl;
+		l_str << "START BCAST (H)" << print(elem) << std::endl;
 		log_(l_str);
 	}
 	int op_res = bcast_node_info_template(queue, &elem, priority_rank, &meta);
@@ -621,7 +625,7 @@ int bcast_tail_info(rma_nb_queue_t* queue, elem_t elem, int priority_rank) {
 	meta.bcast_method = bcastpart_tail_info;
 
 	if (USE_DEBUG) {
-		l_str << "START BCAST (T)" << std::endl;
+		l_str << "START BCAST (T)" << print(elem) << std::endl;
 		log_(l_str);
 	}
 	int op_res = bcast_node_info_template(queue, &elem, priority_rank, &meta);
@@ -637,7 +641,7 @@ int bcast_head_tail_info(rma_nb_queue_t* queue, elem_t elem, int priority_rank) 
 	meta.bcast_method = bcastpart_head_tail_info;
 
 	if (USE_DEBUG) {
-		l_str << "START BCAST (H|T)" << std::endl;
+		l_str << "START BCAST (H|T)" << print(elem) << std::endl;
 		log_(l_str);
 	}
 	int op_res = bcast_node_info_template(queue, &elem, priority_rank, &meta);
@@ -653,7 +657,7 @@ int bcast_tail_head_info(rma_nb_queue_t* queue, elem_t elem, int priority_rank) 
 	meta.bcast_method = bcastpart_tail_head_info;
 
 	if (USE_DEBUG) {
-		l_str << "START BCAST (T|H)" << std::endl;
+		l_str << "START BCAST (T|H)" << print(elem) << std::endl;
 		log_(l_str);
 	}
 	int op_res = bcast_node_info_template(queue, &elem, priority_rank, &meta);
@@ -694,7 +698,7 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 
 	u_node_info_t tail_info;
 	u_node_info_t undefined_node_info;
-	
+
 	elem_t *new_elem;
 	elem_t sentinel;
 	elem_t tail;
@@ -717,13 +721,15 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 	}
 
 	if(USE_DEBUG) {
-		l_str << "new_elem " << print(*new_elem);
+		l_str << "new_elem " << print(*new_elem) << std::endl;
 		log_(l_str);
 	}
 
 	undefined_node_info.raw = UNDEFINED_NODE_INFO;
 start:
 	get_tail_info(queue, myrank, &tail_info);
+	// l_str << "new_elem " << print(*new_elem) << std::endl;
+	// log_(l_str);
 	if (tail_info.raw == UNDEFINED_NODE_INFO) {
 		get_sentinel(queue, &sentinel);
 		if (sentinel.next_node_info.raw == UNDEFINED_NODE_INFO) {
@@ -813,7 +819,7 @@ int dequeue(rma_nb_queue_t* queue, val_t* value) {
 	if (USE_DEBUG) log_("START DEQUEUE\n");
 
 	begin_epoch_all(queue->win);
-	
+
 start:
 	get_head_info(queue, rank, &head_info);
 	//rank = myrank;
@@ -822,10 +828,10 @@ start:
 		if (sentinel.next_node_info.raw == UNDEFINED_NODE_INFO) {
 			end_epoch_all(queue->win);
 			if (USE_DEBUG) {
-				l_str << "EXIT ENQUEUE with code " << CODE_NO_HEAD << std::endl;
+				l_str << "EXIT ENQUEUE with code " << CODE_QUEUE_EMPTY << std::endl;
 				log_(l_str);
 			}
-			return CODE_NO_HEAD;
+			return CODE_QUEUE_EMPTY;
 		}
 		head_info = sentinel.next_node_info;
 	}
@@ -836,6 +842,7 @@ start:
 		if (head.state == NODE_ACQUIRED) {
 			if (set_state(queue, head.info, node_state_deleted, node_state_acquired)) {
 				*value = head.value;
+				get_elem(queue, head.info, &head); // refresh same head
 
 				if (head.next_node_info.raw != UNDEFINED_NODE_INFO) {
 					elem_t next_head;
@@ -862,10 +869,10 @@ start:
 			} else {
 				end_epoch_all(queue->win);
 				if (USE_DEBUG) {
-					l_str << "EXIT DEQUEUE with code " << CODE_NO_HEAD << std::endl;
+					l_str << "EXIT DEQUEUE with code " << CODE_QUEUE_EMPTY << std::endl;
 					log_(l_str);
 				}
-				return CODE_NO_HEAD;
+				return CODE_QUEUE_EMPTY;
 			}
 		}
 
@@ -878,6 +885,26 @@ start:
 		// begin_epoch_all(queue->win);
 		goto start; // head became free, redo algorithm
 	}
+}
+
+unsigned long long get_actual_size(rma_nb_queue_t* queue) {
+	unsigned long long size = 0;
+	elem_t elem;
+
+	begin_epoch_all(queue->win);
+
+	get_head_info(queue, myrank, &elem.next_node_info);
+	if (elem.next_node_info.raw != UNDEFINED_NODE_INFO) {
+		do {
+			++size;
+			get_elem(queue, elem.next_node_info, &elem);
+		} while (elem.next_node_info.raw != UNDEFINED_NODE_INFO);
+
+		if(elem.state == NODE_DELETED) --size;
+	}
+
+	end_epoch_all(queue->win);
+	return size;	
 }
 
 std::string print(u_node_info_t info) {
@@ -899,7 +926,7 @@ std::string print(elem_t elem) {
 		<< elem.value << "\t"
 		<< elem.state << "\tcurrent "
 		<< print(elem.info) << "\tnext "
-		<< print(elem.next_node_info) << std::endl;
+		<< print(elem.next_node_info);
 	return s.str();
 }
 std::string print(rma_nb_queue_t* queue) {
@@ -918,7 +945,7 @@ std::string print(rma_nb_queue_t* queue) {
 		do {
 			++total_elem;
 			get_elem(queue, next_node_info, &elem);
-			s << "\t" << print(elem);
+			s << "\t" << print(elem) << std::endl;
 			next_node_info = elem.next_node_info;
 		} while (next_node_info.raw != UNDEFINED_NODE_INFO);
 	}
@@ -942,7 +969,7 @@ std::string print_from_sentinel(rma_nb_queue_t* queue) {
 		do {
 			++total_elem;
 			get_elem(queue, next_node_info, &elem);
-			s << print(elem);
+			s << print(elem) << std::endl;
 			next_node_info = elem.next_node_info;
 		} while (next_node_info.raw != UNDEFINED_NODE_INFO);
 	}
@@ -955,15 +982,15 @@ std::string print_attributes(rma_nb_queue_t* queue) {
 	std::ostringstream s;
 
 	s << "queue attributes:" << std::endl;
-	
+
 	s << "\twindow:\t\t" << queue->win << std::endl;
-	
+
 	s << "\tbase_dl:\t" << queue->basedisp_local << std::endl;
 	s << "\tbase_ds:\t";
 	for (int i = 0; i < queue->n_proc; ++i) {
 		s << queue->basedisp[i] << " ";
 	}
-	
+
 	s << "\n\tdata_dl:\t" << queue->datadisp_local << std::endl;
 	s << "\tdata_ds:\t";
 	for (int i = 0; i < queue->n_proc; ++i) {
@@ -972,20 +999,20 @@ std::string print_attributes(rma_nb_queue_t* queue) {
 	s << "\n\tdata:\t\t" << queue->data << std::endl;
 	s << "\tdata_ptr:\t" << queue->data_ptr << std::endl;
 	s << "\tdata_size:\t" << queue->data_size << std::endl;
-	
+
 	s << "\tstate_dl:\t" << queue->statedisp_local << std::endl;
 	s << "\tstate_ds:\t";
 	for (int i = 0; i < queue->n_proc; ++i) {
 		s << queue->statedisp[i] << " ";
 	}
-	
+
 	s << "\n\tsent_d:\t\t" << queue->sentineldisp << std::endl;
 	if (myrank == MAIN_RANK) {
-		s << "\tsentinel:\n\t\t" << print(queue->sentinel);
+		s << "\tsentinel:\n\t\t" << print(queue->sentinel) << std::endl;
 	}
 
 	s << "\tqueue_state:\t" << print(queue->queue_state);
-	
+
 	s << "\tcomm:\t" << queue->comm << std::endl;
 	s << "\tn_proc:\t" << queue->n_proc << std::endl;
 	s << "\tts_offset:\t" << queue->ts_offset << std::endl;
@@ -1009,7 +1036,7 @@ void file_print(rma_nb_queue_t* queue, const char* path) {
 	if (!file.is_open()) {
 		return;
 	}
-	
+
 	elem_t elem;
 	u_node_info_t next_node_info;
 
@@ -1037,6 +1064,33 @@ void file_print(rma_nb_queue_t* queue, const char* path) {
 	file.close();
 }
 
+void check_results(rma_nb_queue_t* queue, test_result result) {
+	if(myrank == MAIN_RANK) {
+		bool success;
+		int actual_size;
+		test_result current;
+		test_result total = result;
+
+		for(int target = 1; target < queue->n_proc; ++target) {
+			MPI_Recv(&current, sizeof(test_result), MPI_BYTE,
+					 target, MPI_ANY_TAG, queue->comm, MPI_STATUS_IGNORE);
+			total.added += current.added;
+			total.deleted += current.deleted;
+		}
+
+		actual_size = get_actual_size(queue);
+		success = (total.added - total.deleted) == actual_size;
+		l_str << "overall added " << total.added
+			<< ", deleted " << total.deleted << std::endl
+			<< "\tqueue actual size " << actual_size << std::endl
+			<< "TEST " << (success ? "OK" : "FAILED") << std::endl;
+		log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_FILE);
+	} else {
+		MPI_Send(&result, sizeof(test_result), MPI_BYTE,
+				 MAIN_RANK, 0, queue->comm);
+	}
+}
+ 
 void test_wtime_wtick() {
 	double wtime = MPI_Wtime();
 	double wtick = MPI_Wtick();
@@ -1047,14 +1101,14 @@ void test_wtime_wtick() {
 	bool beq = result1 == result2;
 	//bool bas = AreSame(result1, result2);
 	bool bm = result1 > result2;
-	l_str << std::setprecision(200) 
+	l_str << std::setprecision(200)
 		<< "wtime - " << wtime
-		<< "\n\twtick - " << wtick 
-		<< "\n\tresult1 - " << result1 
-		<< "\n\tresult2 - " << result2 
-		<< "\n\tsub - " << sub 
-		<< "\n\tr1 < r2 - " << bl 
-		<< "\n\tr1 == r2 - " << beq 
+		<< "\n\twtick - " << wtick
+		<< "\n\tresult1 - " << result1
+		<< "\n\tresult2 - " << result2
+		<< "\n\tsub - " << sub
+		<< "\n\tr1 < r2 - " << bl
+		<< "\n\tr1 == r2 - " << beq
 		//<< "\n\tr1 as r2 - " << bas
 		<< "\n\tr1 > r2 - " << bm << std::endl;
 	log_(l_str);
@@ -1287,14 +1341,16 @@ void test_deq_multiple_proc(int argc, char** argv) {
 
 	rma_nb_queue_free(queue);
 }
-void test1(int argc, char** argv) {
+void test1(int size_per_node, int num_of_ops_per_node) {
+	log_("STARTING TEST1\n");
+
 	val_t value;
-	int added = 0;
-	int deleted = 0;
-	int size_per_node = 15000;
-	int num_of_ops_per_node = 1000;
 	int start, end;
 	double result_time;
+
+	test_result result;
+	result.added = 0;
+	result.deleted = 0;
 
 	rma_nb_queue_t* queue;
 	rma_nb_queue_init(&queue, size_per_node, MPI_COMM_WORLD);
@@ -1302,11 +1358,16 @@ void test1(int argc, char** argv) {
 
 	MPI_Barrier(queue->comm);
 	for (int i = 0; i < num_of_ops_per_node; ++i) {
-		if (enqueue(queue, rand() % 10000) == CODE_SUCCESS) ++added;
-		l_str << "added " << added << std::endl;
-		log_(l_str);
-		// g_pause();
+		if (enqueue(queue, rand() % 10000) == CODE_SUCCESS) ++result.added;
+		
+		if(USE_DEBUG) {
+			l_str << "added " << result.added << std::endl;
+			log_(l_str);
+			// g_pause();
+		}
 	}
+	l_str << "added " << result.added << std::endl;
+	log_(l_str);
 	MPI_Barrier(queue->comm);
 
 	if (myrank == MAIN_RANK) {
@@ -1317,34 +1378,43 @@ void test1(int argc, char** argv) {
 	MPI_Barrier(queue->comm);
 	for (int i = 0; i < num_of_ops_per_node; ++i) {
 		if (rand() % 2) {
-			if (enqueue(queue, rand() % 10000) == CODE_SUCCESS) ++added;
+			if (enqueue(queue, rand() % 10000) == CODE_SUCCESS) ++result.added;
 		} else {
-			if (dequeue(queue, &value) == CODE_SUCCESS) ++deleted;
+			if (dequeue(queue, &value) == CODE_SUCCESS) ++result.deleted;
 		}
 
-		// l_str << "added " << added << "\tdeleted " << deleted << std::endl;
-		// log_(l_str);
+		if(USE_DEBUG) {
+			l_str << "added " << result.added << "\tdeleted " << result.deleted << std::endl;
+			log_(l_str);
+		}
 	}
 	MPI_Barrier(queue->comm);
 
 	if (myrank == MAIN_RANK) {
 		end = clock();
 		result_time = ((double)(end - start)) / CLOCKS_PER_SEC;
+
+		log_(print(queue));
 	}
 
-	l_str << "total added\t" << added << ",\tdeleted\t" << deleted << std::endl;
-	if (myrank == MAIN_RANK) {
-		l_str << "time taken: " << result_time << " s\tthroughput: " << ((double)(num_of_ops_per_node * queue->n_proc)) / result_time << " ops/s" << std::endl;
-	}
+	l_str << "total added\t" << result.added << ",\tdeleted\t" << result.deleted << std::endl;
 	log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_FILE);
-
-	if (myrank == MAIN_RANK) log_(print(queue));
 	MPI_Barrier(queue->comm);
 
+	check_results(queue, result);
+
+	if (myrank == MAIN_RANK) {
+		l_str << "time taken: " << result_time << " s\tthroughput: " << ((double)(num_of_ops_per_node * queue->n_proc)) / result_time << " ops/s" << std::endl;
+		log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_FILE);
+	}
+
 	rma_nb_queue_free(queue);
-	log_("exiting test1");
+	log_("EXITING TEST\n");
 }
 void tests(int argc, char** argv) {
+	int size_per_node = 5000;
+	int num_of_ops_per_node = 10000;
+
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 
@@ -1361,7 +1431,7 @@ void tests(int argc, char** argv) {
 	// test_deq_single_proc(argc, argv);
 	// test_deq_multiple_proc(argc, argv);
 	// test_wtime_wtick();
-	test1(argc, argv);
+	test1(size_per_node, num_of_ops_per_node);
 
 	log_close();
 	MPI_Finalize();
