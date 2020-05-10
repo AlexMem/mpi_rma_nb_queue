@@ -14,6 +14,7 @@
 #define MAIN_RANK 0
 
 #define UNDEFINED_NODE_INFO -1LL // rank == -1, position == -1
+#define UNDEFINED_TS -1.0
 
 #define NODE_FREE 0
 #define NODE_ACQUIRED 1
@@ -43,10 +44,10 @@ typedef struct {
 } elem_t;
 
 typedef struct {
-	MPI_Aint basedisp_local;    /* Base address of circbuf (local) */
-	MPI_Aint* basedisp;         /* Base address of circbuf (all processes) */
+	MPI_Aint basedisp_local;	/* Base address of this struct (local) */
+	MPI_Aint* basedisp;			/* Base address of this struct (all processes) */
 
-	elem_t* data;                /* Physical buffer for queue elements */
+	elem_t* data;				/* Physical buffer for queue elements */
 	int data_ptr;
 	int data_size;
 	MPI_Aint datadisp_local;    /* Address of data buffer (local) */
@@ -57,11 +58,19 @@ typedef struct {
 	MPI_Aint* statedisp;		/* Address of queue state struct (all processes) */
 
 	elem_t sentinel;			/* Sentinel element (MAIN_RANK only) */
-	MPI_Aint sentineldisp;		/* Address of sentinel in main process */
+	MPI_Aint sentineldisp;		/* Address of sentinel in MAIN_RANK process */
+
+	elem_t head;				/* Currently using head */
+	MPI_Aint headdisp_local;	/* Address of head struct (local) */
+	MPI_Aint* headdisp;			/* Address of head struct (all processes) */
+
+	elem_t tail;				/* Currently using tail */
+	MPI_Aint taildisp_local;	/* Address of tail struct (local) */
+	MPI_Aint* taildisp;			/* Address of tail struct (all processes) */
 
 	MPI_Win win;                /* RMA access window */
 	MPI_Comm comm;              /* Communicator for the queue distribution */
-	int n_proc;                  /* Number of processes in communicator */
+	int n_proc;                 /* Number of processes in communicator */
 	double ts_offset;           /* Timestamp offset from 0 process */
 } rma_nb_queue_t;
 
