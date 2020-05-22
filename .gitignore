@@ -346,3 +346,4 @@ healthchecksdb
 mpi_rma_nonblocking_queue/.vscode
 *.out
 log_*.txt
+*.gch

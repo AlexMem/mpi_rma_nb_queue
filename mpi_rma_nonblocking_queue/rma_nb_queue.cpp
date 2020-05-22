@@ -12,7 +12,7 @@
 #include <iomanip>
 
 #include "rma_nb_queue.h"
-//#include "utils.h"
+#include "include/utils.h"
 
 #define USE_DEBUG 0
 
@@ -87,8 +87,8 @@ void g_pause() {
 double get_ts(void) {
 	return MPI_Wtime();
 }
-void set_ts(elem_t* elem) {
-	elem->ts = get_ts();
+void set_ts(elem_t* elem, double offset) {
+	elem->ts = get_ts() + offset;
 }
 
 bool CAS(const u_node_info_t* origin_addr, const u_node_info_t* compare_addr, int target_rank, MPI_Aint target_disp, MPI_Win win) {
@@ -155,8 +155,8 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 	}
 
 	(*queue)->comm = comm;
-	MPI_Comm_rank(comm, &myrank);
-	MPI_Comm_size(comm, &(*queue)->n_proc);
+	MPI_Comm_rank((*queue)->comm, &myrank);
+	MPI_Comm_size((*queue)->comm, &(*queue)->n_proc);
 	MPI_Get_address(*queue, &(*queue)->basedisp_local);
 
 	int data_buffer_size = sizeof(elem_t) * size_per_node;
@@ -195,7 +195,8 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 
 	offsets_init();
 
-	//(*queue)->ts_offset = mpi_sync_time(comm);
+	(*queue)->ts_offset = mpi_sync_time((*queue)->comm);
+	init_random_generator();
 
 	MPI_Barrier((*queue)->comm);
 	return CODE_SUCCESS;
@@ -594,7 +595,8 @@ int get_next_node_rand(rand_provider_t* provider) {
 	if (provider->n_proc == 0) return UNDEFINED_RANK;
 
 	int n_proc = provider->n_proc;
-	int i = rand() % n_proc;
+	// int i = rand() % n_proc;
+	int i = get_rand(n_proc);
 	int node = provider->nodes[i];
 	if (i < provider->n_proc - 1) {
 		exchange(&provider->nodes[i], &provider->nodes[n_proc - 1]);
@@ -853,7 +855,7 @@ start:
 	if (queue->queue_state.tail.raw == UNDEFINED_NODE_INFO) {
 		get_sentinel(queue, &sentinel);
 		if (sentinel.next_node_info.raw == UNDEFINED_NODE_INFO) {
-			set_ts(new_elem);
+			set_ts(new_elem, queue->ts_offset);
 			if (set_sentinel_next_node_info(queue, sentinel.info, new_elem->info, undefined_node_info)) {
 				bcast_tail_head_info(queue, *new_elem, myrank);
 				end_epoch_all(queue->win);
@@ -874,7 +876,7 @@ start:
 	while (1) {
 		if (queue->tail.state == NODE_ACQUIRED) {
 			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
-				set_ts(new_elem);
+				set_ts(new_elem, queue->ts_offset);
 				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
 					get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
 					if (queue->tail.state == NODE_DELETED) {
@@ -900,7 +902,7 @@ start:
 
 		if (queue->tail.state == NODE_DELETED) {
 			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
-				set_ts(new_elem);
+				set_ts(new_elem, queue->ts_offset);
 				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
 					bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
 
@@ -1292,7 +1294,8 @@ void test_enq_single_proc(int argc, char** argv) {
 
 	MPI_Barrier(queue->comm);
 	for (int i = 0; i < num_of_enqs; ++i) {
-		value = rand() % max_value;
+		// value = rand() % max_value;
+		value = get_rand(max_value);
 		op_res = enqueue(queue, value);
 		if (op_res == CODE_SUCCESS) {
 			l_str << "added " << value << std::endl;
@@ -1325,7 +1328,8 @@ void test_enq_multiple_proc(int argc, char** argv) {
 
 	MPI_Barrier(queue->comm);
 	for (int i = 0; i < num_of_enqs; ++i) {
-		value = rand() % max_value;
+		// value = rand() % max_value;
+		value = get_rand(max_value);
 		op_res = enqueue(queue, value);
 		if (op_res == CODE_SUCCESS) {
 			++added;
@@ -1366,7 +1370,8 @@ void test_deq_single_proc(int argc, char** argv) {
 
 	MPI_Barrier(queue->comm);
 	for (int i = 0; i < num_of_enqs; ++i) {
-		value = rand() % max_value;
+		// value = rand() % max_value;
+		value = get_rand(max_value);
 		op_res = enqueue(queue, value);
 		if (op_res == CODE_SUCCESS) {
 			l_str << "added " << value << std::endl;
@@ -1417,7 +1422,8 @@ void test_deq_multiple_proc(int argc, char** argv) {
 
 	MPI_Barrier(queue->comm);
 	for (int i = 0; i < num_of_enqs; ++i) {
-		value = rand() % max_value;
+		// value = rand() % max_value;
+		value = get_rand(max_value);
 		op_res = enqueue(queue, value);
 		if (op_res == CODE_SUCCESS) {
 			++added;
@@ -1486,18 +1492,20 @@ void test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_
 
 	rma_nb_queue_t* queue;
 	rma_nb_queue_init(&queue, size_per_node, comm);
-	//init_random_generator();
 
-	l_str << "n_proc: " << queue->n_proc << std::endl;
+	l_str << "n_proc: " << queue->n_proc
+			<< "\n\tts_offset: " << queue->ts_offset << std::endl;
 	log_(l_str);
 
 	if(myrank == MAIN_RANK) {
 		check_using_memory_model(queue);
+		l_str << "number of procs " << queue->n_proc << std::endl;
+		log_(l_str, LOG_PRINT_CONSOLE);
 	}
 
 	MPI_Barrier(queue->comm);
 	for (int i = 0; i < num_of_ops_per_node/2; ++i) {
-		if (enqueue(queue, rand() % 10000) == CODE_SUCCESS) ++result.added;
+		if (enqueue(queue, get_rand(10000)) == CODE_SUCCESS) ++result.added;
 		
 		if(USE_DEBUG) {
 			l_str << "added " << result.added << std::endl;
@@ -1519,8 +1527,8 @@ void test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_
 	MPI_Barrier(queue->comm);
 	start_own = clock();
 	for (int i = 0; i < num_of_ops_per_node; ++i) {
-		if (rand() % 2) {
-			if (enqueue(queue, rand() % 10000) == CODE_SUCCESS) ++result.added;
+		if (get_rand(2)) {
+			if (enqueue(queue, get_rand(10000)) == CODE_SUCCESS) ++result.added;
 		} else {
 			if (dequeue(queue, &value) == CODE_SUCCESS) ++result.deleted;
 		}
@@ -1598,7 +1606,7 @@ void tests(int argc, char** argv) {
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 
-	srand(time(0) * myrank);
+	// srand(time(0) * myrank);
 	log_init(myrank);
 
 	// if(myrank == MAIN_RANK) {
