@@ -884,7 +884,6 @@ start:
 					} else {
 						bcast_tail_info(queue, *new_elem, myrank);
 					}
-
 					elem_reset(&queue->tail);
 					end_epoch_all(queue->win);
 					if (USE_DEBUG) {
@@ -895,7 +894,6 @@ start:
 				}
 				get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
 			}
-
 			get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
 			continue;
 		}
@@ -905,7 +903,6 @@ start:
 				set_ts(new_elem, queue->ts_offset);
 				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
 					bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
-
 					elem_reset(&queue->tail);
 					end_epoch_all(queue->win);
 					if (USE_DEBUG) {
@@ -957,13 +954,11 @@ start:
 			if (set_state(queue, queue->head.info, node_state_deleted, node_state_acquired)) {
 				*value = queue->head.value;
 				get_elem(queue, queue->head.info, &queue->head); // refresh same head
-
 				if (queue->head.next_node_info.raw != UNDEFINED_NODE_INFO) {
 					elem_t next_head;
 					get_elem(queue, queue->head.next_node_info, &next_head);
 					bcast_head_info(queue, next_head, myrank);
 				}
-
 				elem_reset(&queue->head);
 				end_epoch_all(queue->win);
 				if (USE_DEBUG) {
@@ -972,7 +967,6 @@ start:
 				}
 				return CODE_SUCCESS;
 			}
-
 			get_elem(queue, queue->head.info, &queue->head); // refresh same head
 		}
 
