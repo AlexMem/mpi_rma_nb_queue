@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -1178,6 +1179,21 @@ void file_print(rma_nb_queue_t* queue, const char* path) {
 	file.close();
 }
 
+void submit_hostname(MPI_Comm comm) {
+	const int host_name_size = 20;
+	char host_name[host_name_size];
+	int comm_size;
+
+	MPI_Comm_size(comm, &comm_size);
+	gethostname(host_name, host_name_size);
+	for(int i = 0; i < comm_size; ++i) {
+		if(i == myrank) {
+			l_str << "running on host " << host_name << std::endl;
+			log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_FILE);
+		}
+		MPI_Barrier(comm);
+	}
+}
 double calc_throughput(int num_of_ops_per_node, int n_proc, double time_taken) {
 	return ((double)(num_of_ops_per_node * n_proc)) / time_taken;
 }
@@ -1603,18 +1619,18 @@ void tests(int argc, char** argv) {
 	// srand(time(0) * myrank);
 	log_init(myrank);
 
+	submit_hostname(MPI_COMM_WORLD);
 	// if(myrank == MAIN_RANK) {
 	// 	test_get_next_node_rand();
 	// }
-
-	// test_queue_init(argc, argv);
+	test_queue_init(argc, argv);
 	// test_enq_single_proc(argc, argv);
 	// test_enq_multiple_proc(argc, argv);
 	// test_deq_single_proc(argc, argv);
 	// test_deq_multiple_proc(argc, argv);
 	// test_wtime_wtick();
 	// test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD);
-	test_complex(size_per_node, num_of_ops_per_node);
+	// test_complex(size_per_node, num_of_ops_per_node);
 
 	log_close();
 	MPI_Finalize();
