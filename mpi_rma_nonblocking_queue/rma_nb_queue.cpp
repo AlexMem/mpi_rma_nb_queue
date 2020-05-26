@@ -643,44 +643,68 @@ int bcastpart_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_m
 	return CODE_SUCCESS;
 }
 int bcastpart_head_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_meta_t* meta) {
-	do {
-		get_head_info(queue, target, &meta->head_info);
-		if (meta->head_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->head_info, &meta->head);
-			if (elem->ts < meta->head.ts) break;
-		}
-		if (set_head_info(queue, target, elem->info, meta->head_info) == CODE_SUCCESS) break;
-	} while (1);
+	if(meta->should_update_head) {
+		do {
+			get_head_info(queue, target, &meta->head_info);
+			if(meta->head_info.raw != UNDEFINED_NODE_INFO) {
+				get_elem(queue, meta->head_info, &meta->head);
+				if (elem->ts < meta->head.ts) {
+					meta->should_update_head = false;
+					break;
+				}
+			}
+			if (set_head_info(queue, target, elem->info, meta->head_info) == CODE_SUCCESS) break;
+		} while (1);
+	}
 
-	do {
-		get_tail_info(queue, target, &meta->tail_info);
-		if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->tail_info, &meta->tail);
-			if (elem->ts < meta->tail.ts) break;
-		}
-		if (set_tail_info(queue, target, elem->info, meta->tail_info) == CODE_SUCCESS) break;
-	} while (1);
+	if(meta->should_update_tail) {
+		do {
+			get_tail_info(queue, target, &meta->tail_info);
+			if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
+				get_elem(queue, meta->tail_info, &meta->tail);
+				if (elem->ts < meta->tail.ts) {
+					meta->should_update_tail = false;
+					break;
+				}
+			}
+			if (set_tail_info(queue, target, elem->info, meta->tail_info) == CODE_SUCCESS) break;
+		} while (1);
+	}
+
+	if(!meta->should_update_head && !meta->should_update_tail) return CODE_ERROR;
 
 	return CODE_SUCCESS;
 }
 int bcastpart_tail_head_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_meta_t* meta) {
-	do {
-		get_tail_info(queue, target, &meta->tail_info);
-		if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->tail_info, &meta->tail);
-			if (elem->ts < meta->tail.ts) break;
-		}
-		if (set_tail_info(queue, target, elem->info, meta->tail_info) == CODE_SUCCESS) break;
-	} while (1);
+	if(meta->should_update_tail) {
+		do {
+			get_tail_info(queue, target, &meta->tail_info);
+			if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
+				get_elem(queue, meta->tail_info, &meta->tail);
+				if (elem->ts < meta->tail.ts) {
+					meta->should_update_tail = false;
+					break;
+				}
+			}
+			if (set_tail_info(queue, target, elem->info, meta->tail_info) == CODE_SUCCESS) break;
+		} while (1);
+	}
 
-	do {
-		get_head_info(queue, target, &meta->head_info);
-		if(meta->head_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->head_info, &meta->head);
-			if (elem->ts < meta->head.ts) break;
-		}
-		if (set_head_info(queue, target, elem->info, meta->head_info) == CODE_SUCCESS) break;
-	} while (1);
+	if(meta->should_update_head) {
+		do {
+			get_head_info(queue, target, &meta->head_info);
+			if(meta->head_info.raw != UNDEFINED_NODE_INFO) {
+				get_elem(queue, meta->head_info, &meta->head);
+				if (elem->ts < meta->head.ts) {
+					meta->should_update_head = false;
+					break;
+				}
+			}
+			if (set_head_info(queue, target, elem->info, meta->head_info) == CODE_SUCCESS) break;
+		} while (1);
+	}
+
+	if(!meta->should_update_head && !meta->should_update_tail) return CODE_ERROR;
 
 	return CODE_SUCCESS;
 }
@@ -697,13 +721,15 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 	}
 
 	if (priority_rank != myrank) {	// send to priority rank, if priority is myrank - skip this step
-
 		if (USE_DEBUG) {
 			l_str << "bcasting to priority " << priority_rank << std::endl;
 			log_(l_str);
 		}
-
 		op_res = meta->bcast_method(queue, priority_rank, elem, meta);
+		if(op_res == CODE_ERROR) {
+			rand_provider_free(&provider);
+			return CODE_PARTLY_SUCCESS;
+		}
 		exclude_rank(&provider, priority_rank);
 	}
 
@@ -711,24 +737,29 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 		l_str << "bcasting to me\n";
 		log_(l_str);
 	}
-
 	op_res = meta->bcast_method(queue, myrank, elem, meta);	// send to me
+	if(op_res == CODE_ERROR) {
+		rand_provider_free(&provider);
+		return CODE_PARTLY_SUCCESS;
+	}
 	exclude_rank(&provider, myrank);
 
 	while (1) {
 		target_node = get_next_node_rand(&provider);
-
 		if (USE_DEBUG) {
 			l_str << "bcasting to " << target_node << std::endl;
 			log_(l_str);
 		}
-
 		if (target_node == UNDEFINED_RANK) {
 			rand_provider_free(&provider);
 			return CODE_SUCCESS;
 		}
 
-		op_res = meta->bcast_method(queue, target_node, elem, meta);
+		op_res = meta->bcast_method(queue, target_node, elem, meta); // send to target_node
+		if(op_res == CODE_ERROR) {
+			rand_provider_free(&provider);
+			return CODE_PARTLY_SUCCESS;
+		}
 	}
 }
 
@@ -1610,8 +1641,8 @@ void test_complex(int size_per_node, int num_of_ops_per_node) {
 	log_("EXITING TEST_COMPLEX\n");
 }
 void tests(int argc, char** argv) {
-	int size_per_node = 5000;
-	int num_of_ops_per_node = 10000;
+	int size_per_node = 150000;
+	int num_of_ops_per_node = 100000;
 
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
@@ -1623,13 +1654,13 @@ void tests(int argc, char** argv) {
 	// if(myrank == MAIN_RANK) {
 	// 	test_get_next_node_rand();
 	// }
-	test_queue_init(argc, argv);
+	// test_queue_init(argc, argv);
 	// test_enq_single_proc(argc, argv);
 	// test_enq_multiple_proc(argc, argv);
 	// test_deq_single_proc(argc, argv);
 	// test_deq_multiple_proc(argc, argv);
 	// test_wtime_wtick();
-	// test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD);
+	test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD);
 	// test_complex(size_per_node, num_of_ops_per_node);
 
 	log_close();
