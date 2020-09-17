@@ -31,8 +31,8 @@ typedef union {
 } u_node_info_t;
 
 typedef struct {
-	u_node_info_t head;
-	u_node_info_t tail;
+	u_node_info_t head_info;
+	u_node_info_t tail_info;
 } queue_state_t;
 
 typedef struct {
@@ -53,7 +53,7 @@ typedef struct {
 	MPI_Aint datadisp_local;    /* Address of data buffer (local) */
 	MPI_Aint* datadisp;         /* Address of data buffer (all processes) */
 
-	queue_state_t queue_state;	/* Contains info about head and tail */
+	queue_state_t state;		/* Contains info about head and tail */
 	MPI_Aint statedisp_local;	/* Address of queue state struct (local) */
 	MPI_Aint* statedisp;		/* Address of queue state struct (all processes) */
 
@@ -95,7 +95,7 @@ typedef struct bcast_meta_t {
 	bool should_update_head;
 	bool should_update_tail;
 
-	queue_state_t queue_state;
+	queue_state_t state;
 	u_node_info_t head_info;
 	u_node_info_t tail_info;
 	elem_t head;
