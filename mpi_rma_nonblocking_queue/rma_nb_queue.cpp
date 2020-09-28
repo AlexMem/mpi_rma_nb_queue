@@ -48,6 +48,9 @@ mpi_call_counter_t mpi_call_counter;
 int myrank;
 offsets_t offsets;
 
+bool locked = true;
+bool unlocked = false;
+
 
 
 // ----- LOGGING -----
@@ -137,6 +140,35 @@ bool CAS(const int* origin_addr, const int* compare_addr, int target_rank, MPI_A
 	MPI_Win_flush(target_rank, win);
 	return result == *compare_addr;
 }
+bool CAS(const bool* origin_addr, const bool* compare_addr, int target_rank, MPI_Aint target_disp, MPI_Win win) {
+	bool result;
+	MPI_Compare_and_swap(origin_addr, compare_addr, &result, MPI_BYTE, target_rank, target_disp, win);
+	MPI_Win_flush(target_rank, win);
+	return result == *compare_addr;
+}
+
+// ----- LOCKING/UNLOCKING -----
+void lock(rma_nb_queue_t* queue, int target, MPI_Win win) {
+	if (USE_DEBUG) {
+		l_str << "trying to lock " << target << " process" << std::endl;
+		log_(l_str);
+	}
+
+	while(!CAS(&locked, &unlocked, target, queue->lockdisp[target], win));
+
+	if (USE_DEBUG) {
+		l_str << "\tlocked " << target << " process" << std::endl;
+		log_(l_str);
+	}
+}
+void unlock(rma_nb_queue_t* queue, int target, MPI_Win win) {
+	CAS(&unlocked, &locked, target, queue->lockdisp[target], win);
+	
+	if (USE_DEBUG) {
+		l_str << "unlocked " << target << " process" << std::endl;
+		log_(l_str);
+	}
+}
 
 void sentinel_init(elem_t* sentinel) {
 	sentinel->ts = UNDEFINED_TS;
@@ -168,8 +200,10 @@ int disps_init(rma_nb_queue_t* queue) {
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->statedisp);
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->headdisp);
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->taildisp);
+	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->lockdisp);
 	if ((queue->basedisp == NULL) || (queue->datadisp == NULL) ||
-		(queue->statedisp == NULL) || (queue->headdisp == NULL) || (queue->taildisp == NULL)) {
+		(queue->statedisp == NULL) || (queue->headdisp == NULL) ||
+		(queue->taildisp == NULL) || (queue->lockdisp == NULL)) {
 		return CODE_ERROR;
 	}
 
@@ -178,6 +212,7 @@ int disps_init(rma_nb_queue_t* queue) {
 	MPI_Allgather(&queue->statedisp_local, 1, MPI_AINT, queue->statedisp, 1, MPI_AINT, queue->comm);
 	MPI_Allgather(&queue->headdisp_local, 1, MPI_AINT, queue->headdisp, 1, MPI_AINT, queue->comm);
 	MPI_Allgather(&queue->taildisp_local, 1, MPI_AINT, queue->taildisp, 1, MPI_AINT, queue->comm);
+	MPI_Allgather(&queue->lockdisp_local, 1, MPI_AINT, queue->lockdisp, 1, MPI_AINT, queue->comm);
 	MPI_Bcast(&queue->sentineldisp, 1, MPI_AINT, MAIN_RANK, queue->comm);
 
 	return CODE_SUCCESS;
@@ -223,6 +258,9 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 		MPI_Get_address(&(*queue)->sentinel, &(*queue)->sentineldisp);
 	}
 
+	(*queue)->lock = false;
+	MPI_Get_address(&(*queue)->lock, &(*queue)->lockdisp_local);
+
 	if (disps_init(*queue) != CODE_SUCCESS) {
 		return CODE_ERROR;
 	}
@@ -243,6 +281,7 @@ void rma_nb_queue_free(rma_nb_queue_t* queue) {
 	MPI_Free_mem(queue->statedisp);
 	MPI_Free_mem(queue->headdisp);
 	MPI_Free_mem(queue->taildisp);
+	MPI_Free_mem(queue->lockdisp);
 	MPI_Free_mem(queue->data);
 	MPI_Free_mem(queue);
 }
@@ -930,21 +969,7 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 	}
 start:
 	if (queue->state.tail_info.raw == UNDEFINED_NODE_INFO) {
-		get_sentinel(queue, &sentinel);
-		if (sentinel.next_node_info.raw == UNDEFINED_NODE_INFO) {
-			set_ts(new_elem, queue->ts_offset);
-			if (set_sentinel_next_node_info(queue, sentinel.info, new_elem->info, undefined_node_info)) {
-				bcast_tail_head_info(queue, *new_elem, myrank);
-				end_epoch_all(queue->win);
-				if (USE_DEBUG) {
-					l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
-					log_(l_str);
-				}
-				return CODE_SUCCESS;
-			}
-			get_sentinel(queue, &sentinel); // refresh sentinel
-		}
-		queue->state.tail_info = sentinel.next_node_info;
+		
 	}
 
 	get_elem(queue, queue->state.tail_info, &queue->tail);
@@ -952,46 +977,11 @@ start:
 
 	while (1) {
 		if (queue->tail.state == NODE_ACQUIRED) {
-			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
-				set_ts(new_elem, queue->ts_offset);
-				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
-					get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
-					if (queue->tail.state == NODE_DELETED) {
-						bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
-					} else {
-						bcast_tail_info(queue, *new_elem, myrank);
-					}
-					elem_reset(&queue->tail);
-					end_epoch_all(queue->win);
-					if (USE_DEBUG) {
-						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
-						log_(l_str);
-					}
-					return CODE_SUCCESS;
-				}
-				get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
-			}
-			get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
-			continue;
+			
 		}
 
 		if (queue->tail.state == NODE_DELETED) {
-			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
-				set_ts(new_elem, queue->ts_offset);
-				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
-					bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
-					elem_reset(&queue->tail);
-					end_epoch_all(queue->win);
-					if (USE_DEBUG) {
-						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
-						log_(l_str);
-					}
-					return CODE_SUCCESS;
-				}
-			} else {
-				get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
-				continue;
-			}
+			
 		}
 
 		goto start;

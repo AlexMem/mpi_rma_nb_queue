@@ -68,6 +68,10 @@ typedef struct {
 	MPI_Aint taildisp_local;	/* Address of tail struct (local) */
 	MPI_Aint* taildisp;			/* Address of tail struct (all processes) */
 
+	bool lock;					/* Lock */
+	MPI_Aint lockdisp_local;	/* Address of lock (local) */
+	MPI_Aint* lockdisp;			/* Address of lock (all processes) */
+
 	MPI_Win win;                /* RMA access window */
 	MPI_Comm comm;              /* Communicator for the queue distribution */
 	int n_proc;                 /* Number of processes in communicator */
