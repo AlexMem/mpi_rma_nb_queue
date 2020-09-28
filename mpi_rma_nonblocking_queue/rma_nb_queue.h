@@ -53,20 +53,8 @@ typedef struct {
 	MPI_Aint datadisp_local;    /* Address of data buffer (local) */
 	MPI_Aint* datadisp;         /* Address of data buffer (all processes) */
 
-	queue_state_t state;		/* Contains info about head and tail */
-	MPI_Aint statedisp_local;	/* Address of queue state struct (local) */
-	MPI_Aint* statedisp;		/* Address of queue state struct (all processes) */
-
-	elem_t sentinel;			/* Sentinel element (MAIN_RANK only) */
-	MPI_Aint sentineldisp;		/* Address of sentinel in MAIN_RANK process */
-
-	elem_t head;				/* Currently using head */
-	MPI_Aint headdisp_local;	/* Address of head struct (local) */
-	MPI_Aint* headdisp;			/* Address of head struct (all processes) */
-
-	elem_t tail;				/* Currently using tail */
-	MPI_Aint taildisp_local;	/* Address of tail struct (local) */
-	MPI_Aint* taildisp;			/* Address of tail struct (all processes) */
+	queue_state_t state;		/* Contains info about head and tail (MAIN_RANK only) */
+	MPI_Aint statedisp;			/* State displacement (MAIN_RANK) */
 
 	bool lock;					/* Lock */
 	MPI_Aint lockdisp_local;	/* Address of lock (local) */
