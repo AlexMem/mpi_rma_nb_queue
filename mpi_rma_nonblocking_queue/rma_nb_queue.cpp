@@ -16,7 +16,7 @@
 #include "include/utils.h"
 
 #define USE_DEBUG 0
-#define USE_MPI_CALLS_COUNTING 1
+#define USE_MPI_CALLS_COUNTING 0
 
 #define LOG_PRINT_CONSOLE 0b10
 #define LOG_PRINT_FILE 0b01
@@ -28,6 +28,7 @@ void rand_provider_init(rand_provider_t* provider, int n_proc);
 void rand_provider_free(rand_provider_t* provider);
 int get_elem(rma_nb_queue_t* queue, u_node_info_t elem_info, elem_t* elem);
 std::string print(u_node_info_t info);
+std::string print(queue_state_t queue_state);
 std::string print(elem_t elem);
 
 typedef struct {
@@ -48,10 +49,8 @@ mpi_call_counter_t mpi_call_counter;
 int myrank;
 offsets_t offsets;
 
-bool locked = true;
-bool unlocked = false;
-
-
+int unlocked = UNDEFINED_RANK;
+int prev_locked_proc = UNDEFINED_RANK;
 
 // ----- LOGGING -----
 void log_init(int rank) {
@@ -150,22 +149,33 @@ bool CAS(const bool* origin_addr, const bool* compare_addr, int target_rank, MPI
 // ----- LOCKING/UNLOCKING -----
 void lock(rma_nb_queue_t* queue, int target) {
 	if (USE_DEBUG) {
-		l_str << "trying to lock " << target << " process" << std::endl;
+		l_str << "trying to lock process " << target << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
 		log_(l_str);
 	}
 
-	while(!CAS(&locked, &unlocked, target, queue->lockdisp[target], queue->win));
-
-	if (USE_DEBUG) {
-		l_str << "\tlocked " << target << " process" << std::endl;
-		log_(l_str);
+	if (target != prev_locked_proc) {
+		while(!CAS(&myrank, &unlocked, target, queue->lockdisp[target], queue->win));
+		prev_locked_proc = target;
+		if (USE_DEBUG) {
+			l_str << "\tlocked process " << target << std::endl;
+			// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+			log_(l_str);
+		}
+	} else {
+		if (USE_DEBUG) {
+			l_str << "\talready locked process " << target << std::endl;
+			// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+			log_(l_str);
+		}
 	}
 }
 void unlock(rma_nb_queue_t* queue, int target) {
-	CAS(&unlocked, &locked, target, queue->lockdisp[target], queue->win);
-	
-	if (USE_DEBUG) {
-		l_str << "unlocked " << target << " process" << std::endl;
+	bool op_res = CAS(&unlocked, &myrank, target, queue->lockdisp[target], queue->win);
+	prev_locked_proc = UNDEFINED_RANK;
+	if (USE_DEBUG && op_res) {
+		l_str << "unlocked process " << target << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
 		log_(l_str);
 	}
 }
@@ -242,7 +252,7 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 		MPI_Get_address(&(*queue)->state, &(*queue)->statedisp);
 	}
 
-	(*queue)->lock = false;
+	(*queue)->lock = UNDEFINED_RANK;
 	MPI_Get_address(&(*queue)->lock, &(*queue)->lockdisp_local);
 
 	if (disps_init(*queue) != CODE_SUCCESS) {
@@ -282,17 +292,27 @@ void end_epoch_all(MPI_Win win) {
 }
 
 int get_queue_state(rma_nb_queue_t* queue, queue_state_t* queue_state) {
-	// if (target == myrank) {
-	// 	*queue_state = queue->state; // mb MPI_get_acc here?
-	// 	return CODE_SUCCESS;
-	// } else {
+	if (myrank == MAIN_RANK) {
+		*queue_state = queue->state; // mb MPI_get_acc here?
+		if (USE_DEBUG) {
+			l_str << "got queue_state from " << MAIN_RANK << " " << print(*queue_state) << std::endl;
+			log_(l_str);
+		}
+		return CODE_SUCCESS;
+	} else {
 		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 		int op_res = MPI_Get_accumulate(queue_state, sizeof(queue_state_t), MPI_BYTE,
 										queue_state, sizeof(queue_state_t), MPI_BYTE,
 										MAIN_RANK, queue->statedisp, sizeof(queue_state_t), MPI_BYTE,
 										MPI_NO_OP, queue->win);
+		MPI_Win_flush(MAIN_RANK, queue->win);
+
+		if (USE_DEBUG) {
+			l_str << op_res << " got queue_state from " << MAIN_RANK << " " << print(*queue_state) << std::endl;
+			log_(l_str);
+		}
 		return (op_res == MPI_SUCCESS) ? CODE_SUCCESS : CODE_ERROR;
-	// }
+	}
 }
 int set_queue_state(rma_nb_queue_t* queue, queue_state_t queue_state) {
 	// if (target == myrank) {
@@ -302,6 +322,12 @@ int set_queue_state(rma_nb_queue_t* queue, queue_state_t queue_state) {
 		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 		int op_res = MPI_Put(&queue_state, sizeof(queue_state_t), MPI_BYTE,
 							 MAIN_RANK, queue->statedisp, sizeof(queue_state_t), MPI_BYTE, queue->win);
+		MPI_Win_flush(MAIN_RANK, queue->win);
+		
+		if (USE_DEBUG) {
+			l_str << "set queue_state in target " << MAIN_RANK << " to " << print(queue_state) << std::endl;
+			log_(l_str);
+		}
 		return (op_res == MPI_SUCCESS) ? CODE_SUCCESS : CODE_ERROR;
 	// }
 }
@@ -360,10 +386,11 @@ int set_head_info(rma_nb_queue_t* queue, u_node_info_t new_head_info) {
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 
 	op_res = MPI_Put(&new_head_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
-					 MPI_Aint_add(queue->statedisp, offsets.qs_tail), sizeof(u_node_info_t), MPI_BYTE, queue->win);
+					 MPI_Aint_add(queue->statedisp, offsets.qs_head), sizeof(u_node_info_t), MPI_BYTE, queue->win);
+	MPI_Win_flush(MAIN_RANK, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "Set head info in target " << MAIN_RANK << " to " << print(new_head_info) << std::endl;
+		l_str << "set head info in target " << MAIN_RANK << " to " << print(new_head_info) << std::endl;
 		log_(l_str);
 	}
 	return op_res;
@@ -374,9 +401,10 @@ int set_tail_info(rma_nb_queue_t* queue, u_node_info_t new_tail_info) {
 
 	op_res = MPI_Put(&new_tail_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
 					 MPI_Aint_add(queue->statedisp, offsets.qs_tail), sizeof(u_node_info_t), MPI_BYTE, queue->win);
+	MPI_Win_flush(MAIN_RANK, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "Set tail info in target " << MAIN_RANK << " to " << print(new_tail_info) << std::endl;
+		l_str << "set tail info in target " << MAIN_RANK << " to " << print(new_tail_info) << std::endl;
 		log_(l_str);
 	}
 	return op_res;
@@ -447,7 +475,7 @@ int set_next_node_info(rma_nb_queue_t* queue, u_node_info_t target_elem_info, u_
 					 get_elem_next_node_info_disp(queue, target_elem_info), sizeof(u_node_info_t), MPI_BYTE, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "Set elem " << print(target_elem_info) << " next node info to " << print(next_node_info) << std::endl;
+		l_str << "set elem " << print(target_elem_info) << " next node info to " << print(next_node_info) << std::endl;
 		log_(l_str);
 	}
 	return op_res;
@@ -460,7 +488,7 @@ int set_state(rma_nb_queue_t* queue, u_node_info_t target_elem_info, int state) 
 					 get_elem_state_disp(queue, target_elem_info), sizeof(int), MPI_BYTE, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "Set elem " << print(target_elem_info) << " state to " << state << std::endl;
+		l_str << "set elem " << print(target_elem_info) << " state to " << state << std::endl;
 		log_(l_str);
 	}
 	return op_res;
@@ -532,6 +560,7 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 
 	elem_t *new_elem;
 	elem_t tail;
+	queue_state_t queue_state;
 
 	if (USE_DEBUG) {
 		l_str << "START ENQUEUE value " << value << std::endl;
@@ -559,19 +588,23 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 
 	while (1) {
 		lock(queue, MAIN_RANK);
-		get_queue_state(queue, &queue->state);
-		if (queue->state.tail_info.raw == UNDEFINED_NODE_INFO) {
-			queue->state.tail_info = new_elem->info;
-			queue->state.head_info = new_elem->info;
-			set_queue_state(queue, queue->state);
+		get_queue_state(queue, &queue_state);
+		if (queue_state.tail_info.raw == UNDEFINED_NODE_INFO) {
+			queue_state.tail_info = new_elem->info;
+			queue_state.head_info = new_elem->info;
+			set_queue_state(queue, queue_state);
 			unlock(queue, MAIN_RANK);
 			end_epoch_all(queue->win);
+			if (USE_DEBUG) {
+				l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+				log_(l_str);
+			}
 			return CODE_SUCCESS;
 		}
 		unlock(queue, MAIN_RANK);
 
-		lock(queue, queue->state.tail_info.parsed.rank);
-		get_elem(queue, queue->state.tail_info, &tail);
+		lock(queue, queue_state.tail_info.parsed.rank);
+		get_elem(queue, queue_state.tail_info, &tail);
 		if (tail.state == NODE_ACQUIRED) {
 			if (tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_next_node_info(queue, tail.info, new_elem->info);
@@ -580,9 +613,13 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 				unlock(queue, MAIN_RANK);
 				unlock(queue, tail.info.parsed.rank);
 				end_epoch_all(queue->win);
+				if (USE_DEBUG) {
+					l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+					log_(l_str);
+				}
 				return CODE_SUCCESS;
 			}
-			queue->state.tail_info = tail.next_node_info;
+			queue_state.tail_info = tail.next_node_info;
 		}
 		unlock(queue, tail.info.parsed.rank);
 	}
@@ -590,6 +627,7 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 int dequeue(rma_nb_queue_t* queue, val_t* value) {
 	int op_res;
 	elem_t head;
+	queue_state_t queue_state;
 
 	if (USE_DEBUG) log_("START DEQUEUE\n");
 
@@ -597,30 +635,38 @@ int dequeue(rma_nb_queue_t* queue, val_t* value) {
 
 	while(1) {
 		lock(queue, MAIN_RANK);
-		get_queue_state(queue, &queue->state);
-		if(queue->state.head_info.raw == UNDEFINED_NODE_INFO) {
+		get_queue_state(queue, &queue_state);
+		if(queue_state.head_info.raw == UNDEFINED_NODE_INFO) {
 			unlock(queue, MAIN_RANK);
 			end_epoch_all(queue->win);
+			if (USE_DEBUG) {
+				l_str << "EXIT DEQUEUE with code " << CODE_QUEUE_EMPTY << std::endl;
+				log_(l_str);
+			}
 			return CODE_QUEUE_EMPTY;
 		}
 		unlock(queue, MAIN_RANK);
 
-		lock(queue, queue->state.head_info.parsed.rank);
-		get_elem(queue, queue->state.head_info, &head);
+		lock(queue, queue_state.head_info.parsed.rank);
+		get_elem(queue, queue_state.head_info, &head);
 		if (head.state == NODE_ACQUIRED) {
 			*value = head.value;
 			lock(queue, MAIN_RANK);
 			if (head.next_node_info.raw != UNDEFINED_NODE_INFO) {
 				set_head_info(queue, head.next_node_info);
 			} else {
-				queue->state.head_info = head.next_node_info;
-				queue->state.tail_info = head.next_node_info;
-				set_queue_state(queue, queue->state);
+				queue_state.head_info = head.next_node_info;
+				queue_state.tail_info = head.next_node_info;
+				set_queue_state(queue, queue_state);
 			}
-			unlock(queue, MAIN_RANK);
 			set_state(queue, head.info, NODE_FREE);
+			unlock(queue, MAIN_RANK);
 			unlock(queue, head.info.parsed.rank);
 			end_epoch_all(queue->win);
+			if (USE_DEBUG) {
+				l_str << "EXIT DEQUEUE with code " << CODE_SUCCESS << std::endl;
+				log_(l_str);
+			}
 			return CODE_SUCCESS;
 		}
 		unlock(queue, head.info.parsed.rank);
@@ -1239,7 +1285,7 @@ void test_complex(int size_per_node, int num_of_ops_per_node) {
 	log_("EXITING TEST_COMPLEX\n");
 }
 void tests(int argc, char** argv) {
-	int size_per_node = 150000;
+	int size_per_node = 50000;
 	int num_of_ops_per_node = 10000;
 	int n_proc;
 

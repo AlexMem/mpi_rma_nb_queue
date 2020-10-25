@@ -56,7 +56,7 @@ typedef struct {
 	queue_state_t state;		/* Contains info about head and tail (MAIN_RANK only) */
 	MPI_Aint statedisp;			/* State displacement (MAIN_RANK) */
 
-	bool lock;					/* Lock */
+	int lock;					/* Lock (locker sets there own rank)*/
 	MPI_Aint lockdisp_local;	/* Address of lock (local) */
 	MPI_Aint* lockdisp;			/* Address of lock (all processes) */
 

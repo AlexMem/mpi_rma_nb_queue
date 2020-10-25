@@ -12,6 +12,8 @@
 #include "utils.h"
 #include "mpigclock.h"
 
+#include "time.h"
+
 extern int myrank, nproc;
 
 /* init_random_generator: Initialize random generator. */
@@ -19,7 +21,8 @@ void init_random_generator(void)
 {
     /* 10 because it's empirically better for two procs:
      * processes generate different sequences. */
-    srandom(myrank * 10); 
+    // srandom(myrank * 10); 
+    srandom(time(0)); 
 }
 
 /* get_rand: Get random value from 0 to (maxval - 1). */
