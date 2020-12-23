@@ -22,6 +22,9 @@
 #define LOG_PRINT_FILE 0b01
 #define LOG_PRINT_MODE 0b01 // 0b10 - console only, 0b01 - file (one per process) only, 0b11 - console and file
 
+MPI_Aint get_elem_lock_disp(rma_nb_queue_t* queue, u_node_info_t elem_info);
+MPI_Aint get_qs_head_info_lock_disp(rma_nb_queue_t* queue, int target);
+MPI_Aint get_qs_tail_info_lock_disp(rma_nb_queue_t* queue, int target);
 void exclude_rank(rand_provider_t* provider, int rank);
 int get_next_node_rand(rand_provider_t* provider);
 void rand_provider_init(rand_provider_t* provider, int n_proc);
@@ -48,8 +51,7 @@ mpi_call_counter_t mpi_call_counter;
 int myrank;
 offsets_t offsets;
 
-bool locked = true;
-bool unlocked = false;
+int unlocked = UNDEFINED_RANK;
 
 
 
@@ -148,29 +150,81 @@ bool CAS(const bool* origin_addr, const bool* compare_addr, int target_rank, MPI
 }
 
 // ----- LOCKING/UNLOCKING -----
-void lock(rma_nb_queue_t* queue, int target, MPI_Win win) {
+// lock/unlock elem_t
+void lock(rma_nb_queue_t* queue, u_node_info_t target) {
 	if (USE_DEBUG) {
-		l_str << "trying to lock " << target << " process" << std::endl;
+		l_str << "trying to lock elem " << print(target) << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
 		log_(l_str);
 	}
 
-	while(!CAS(&locked, &unlocked, target, queue->lockdisp[target], win));
+	while(!CAS(&myrank, &unlocked, target, get_elem_lock_disp(queue, target), queue->win));
 
 	if (USE_DEBUG) {
-		l_str << "\tlocked " << target << " process" << std::endl;
+		l_str << "\tlocked elem " << print(target) << std::endl;
 		log_(l_str);
 	}
 }
-void unlock(rma_nb_queue_t* queue, int target, MPI_Win win) {
-	CAS(&unlocked, &locked, target, queue->lockdisp[target], win);
-	
+void unlock(rma_nb_queue_t* queue, u_node_info_t target) {
+	bool op_res = CAS(&unlocked, &myrank, get_elem_lock_disp(queue, target), queue->win);
+	// prev_locked_proc = UNDEFINED_RANK;
+	if (USE_DEBUG && op_res) {
+		l_str << "unlocked elem " << print(target) << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+		log_(l_str);
+	}
+}
+// lock/unlock head_info
+void lock_head_info(rma_nb_queue_t* queue, int target) {
 	if (USE_DEBUG) {
-		l_str << "unlocked " << target << " process" << std::endl;
+		l_str << "trying to lock head_info in target " << target << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+		log_(l_str);
+	}
+
+	while(!CAS(&myrank, &unlocked, target, get_qs_head_info_lock_disp(queue, target), queue->win));
+
+	if (USE_DEBUG) {
+		l_str << "\tlocked head_info in target " << target << std::endl;
+		log_(l_str);
+	}
+}
+void unlock_head_info(rma_nb_queue_t* queue, int target) {
+	bool op_res = CAS(&unlocked, &myrank, get_qs_head_info_lock_disp(queue, target), queue->win);
+	// prev_locked_proc = UNDEFINED_RANK;
+	if (USE_DEBUG && op_res) {
+		l_str << "unlocked head_info in target " << print(target) << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+		log_(l_str);
+	}
+}
+// lock/unlock tail_info
+void lock_head_info(rma_nb_queue_t* queue, int target) {
+	if (USE_DEBUG) {
+		l_str << "trying to lock tail_info in target " << target << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+		log_(l_str);
+	}
+
+	while(!CAS(&myrank, &unlocked, target, get_qs_tail_info_lock_disp(queue, target), queue->win));
+
+	if (USE_DEBUG) {
+		l_str << "\tlocked tail_info in target " << target << std::endl;
+		log_(l_str);
+	}
+}
+void unlock_head_info(rma_nb_queue_t* queue, int target) {
+	bool op_res = CAS(&unlocked, &myrank, get_qs_tail_info_lock_disp(queue, target), queue->win);
+	// prev_locked_proc = UNDEFINED_RANK;
+	if (USE_DEBUG && op_res) {
+		l_str << "unlocked tail_info in target " << print(target) << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
 		log_(l_str);
 	}
 }
 
 void sentinel_init(elem_t* sentinel) {
+	sentinel->lock = UNDEFINED_RANK;
 	sentinel->ts = UNDEFINED_TS;
 	sentinel->value = 0;
 	sentinel->state = NODE_ACQUIRED;
@@ -179,6 +233,7 @@ void sentinel_init(elem_t* sentinel) {
 	sentinel->next_node_info.raw = UNDEFINED_NODE_INFO;
 }
 void elem_reset(elem_t* elem) {
+	elem->lock = UNDEFINED_RANK;
 	elem->ts = UNDEFINED_TS;
 	elem->value = 0;
 	elem->state = NODE_FREE;
@@ -191,8 +246,11 @@ void offsets_init(void) {
 	offsets.elem_next_node_info = offsetof(elem_t, next_node_info);
 	offsets.elem_info = offsetof(elem_t, info);
 	offsets.elem_ts = offsetof(elem_t, ts);
+	offsets.elem_lock = offsetof(elem_t, lock);
 	offsets.qs_head = offsetof(queue_state_t, head_info);
 	offsets.qs_tail = offsetof(queue_state_t, tail_info);
+	offsets.qs_head_info_lock = offsetof(queue_state_t, head_info_lock);
+	offsets.qs_tail_info_lock = offsetof(queue_state_t, tail_info_lock);
 }
 int disps_init(rma_nb_queue_t* queue) {
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->basedisp);
@@ -200,10 +258,9 @@ int disps_init(rma_nb_queue_t* queue) {
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->statedisp);
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->headdisp);
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->taildisp);
-	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->lockdisp);
 	if ((queue->basedisp == NULL) || (queue->datadisp == NULL) ||
 		(queue->statedisp == NULL) || (queue->headdisp == NULL) ||
-		(queue->taildisp == NULL) || (queue->lockdisp == NULL)) {
+		(queue->taildisp == NULL)) {
 		return CODE_ERROR;
 	}
 
@@ -212,7 +269,6 @@ int disps_init(rma_nb_queue_t* queue) {
 	MPI_Allgather(&queue->statedisp_local, 1, MPI_AINT, queue->statedisp, 1, MPI_AINT, queue->comm);
 	MPI_Allgather(&queue->headdisp_local, 1, MPI_AINT, queue->headdisp, 1, MPI_AINT, queue->comm);
 	MPI_Allgather(&queue->taildisp_local, 1, MPI_AINT, queue->taildisp, 1, MPI_AINT, queue->comm);
-	MPI_Allgather(&queue->lockdisp_local, 1, MPI_AINT, queue->lockdisp, 1, MPI_AINT, queue->comm);
 	MPI_Bcast(&queue->sentineldisp, 1, MPI_AINT, MAIN_RANK, queue->comm);
 
 	return CODE_SUCCESS;
@@ -245,6 +301,8 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 
 	(*queue)->state.head_info.raw = UNDEFINED_NODE_INFO;
 	(*queue)->state.tail_info.raw = UNDEFINED_NODE_INFO;
+	(*queue)->state.head_info_lock = UNDEFINED_RANK;
+	(*queue)->state.tail_info_lock = UNDEFINED_RANK;
 	MPI_Get_address(&(*queue)->state, &(*queue)->statedisp_local);
 
 	elem_reset(&(*queue)->head);
@@ -257,9 +315,6 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 		sentinel_init(&(*queue)->sentinel);
 		MPI_Get_address(&(*queue)->sentinel, &(*queue)->sentineldisp);
 	}
-
-	(*queue)->lock = false;
-	MPI_Get_address(&(*queue)->lock, &(*queue)->lockdisp_local);
 
 	if (disps_init(*queue) != CODE_SUCCESS) {
 		return CODE_ERROR;
@@ -281,7 +336,6 @@ void rma_nb_queue_free(rma_nb_queue_t* queue) {
 	MPI_Free_mem(queue->statedisp);
 	MPI_Free_mem(queue->headdisp);
 	MPI_Free_mem(queue->taildisp);
-	MPI_Free_mem(queue->lockdisp);
 	MPI_Free_mem(queue->data);
 	MPI_Free_mem(queue);
 }
@@ -372,38 +426,32 @@ int get_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t* tail_info) {
 	// }
 }
 int set_head_info(rma_nb_queue_t* queue, int target, u_node_info_t new_head_info, u_node_info_t prev_head_info) {
-	bool op_res;
-	if (USE_DEBUG) {
-		l_str << "trying to set head info in target " << target << " to " << print(new_head_info) << ", expected " << print(prev_head_info) << std::endl;
-		log_(l_str);
-	}
-	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
+	int op_res;
+	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 
-	op_res = CAS(&new_head_info, &prev_head_info, target,
-				 MPI_Aint_add(queue->statedisp[target], offsets.qs_head), queue->win);
+	op_res = MPI_Put(&new_head_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
+					 MPI_Aint_add(queue->statedisp, offsets.qs_head), sizeof(u_node_info_t), MPI_BYTE, queue->win);
+	MPI_Win_flush(MAIN_RANK, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set head info in target " << target << " to " << print(new_head_info) << std::endl;
+		l_str << "set head info in target " << MAIN_RANK << " to " << print(new_head_info) << std::endl;
 		log_(l_str);
 	}
-	return op_res ? CODE_SUCCESS : CODE_ERROR;
+	return op_res;
 }
 int set_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t new_tail_info, u_node_info_t prev_tail_info) {
-	bool op_res;
-	if (USE_DEBUG) {
-		l_str << "trying to set tail info in target " << target << " to " << print(new_tail_info) << ", expected " << print(prev_tail_info) << std::endl;
-		log_(l_str);
-	}
-	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
+	int op_res;
+	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 
-	op_res = CAS(&new_tail_info, &prev_tail_info, target,
-				 MPI_Aint_add(queue->statedisp[target], offsets.qs_tail), queue->win);
+	op_res = MPI_Put(&new_tail_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
+					 MPI_Aint_add(queue->statedisp, offsets.qs_tail), sizeof(u_node_info_t), MPI_BYTE, queue->win);
+	MPI_Win_flush(MAIN_RANK, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set tail info in target " << target << " to " << print(new_tail_info) << std::endl;
+		l_str << "set tail info in target " << MAIN_RANK << " to " << print(new_tail_info) << std::endl;
 		log_(l_str);
 	}
-	return op_res ? CODE_SUCCESS : CODE_ERROR;
+	return op_res;
 }
 
 MPI_Aint get_elem_disp(rma_nb_queue_t* queue, u_node_info_t elem_info) {
@@ -414,6 +462,15 @@ MPI_Aint get_elem_next_node_info_disp(rma_nb_queue_t* queue, u_node_info_t elem_
 }
 MPI_Aint get_elem_state_disp(rma_nb_queue_t* queue, u_node_info_t elem_info) {
 	return MPI_Aint_add(get_elem_disp(queue, elem_info), offsets.elem_state);
+}
+MPI_Aint get_elem_lock_disp(rma_nb_queue_t* queue, u_node_info_t elem_info) {
+	return MPI_Aint_add(get_elem_disp(queue, elem_info), offsets.elem_lock);
+}
+MPI_Aint get_qs_head_info_lock_disp(rma_nb_queue_t* queue, int target) {
+	return MPI_Aint_add(queue->statedisp[target], offsets.qs_head_info_lock);
+}
+MPI_Aint get_qs_tail_info_lock_disp(rma_nb_queue_t* queue, int target) {
+	return MPI_Aint_add(queue->statedisp[target], offsets.qs_tail_info_lock);
 }
 
 int get_currently_using_head(rma_nb_queue_t* queue, int target, elem_t* head) {
@@ -485,7 +542,7 @@ double get_min_using_ts(rma_nb_queue_t* queue) {
 
 		get_head_info(queue, target, &queue->head.info);
 		get_tail_info(queue, target, &queue->tail.info);
-		if(queue->head.info.raw == UNDEFINED_NODE_INFO) {
+		if(queue->head.info.raw != UNDEFINED_NODE_INFO) {
 			get_elem(queue, queue->head.info, &queue->head);
 		} else {
 			queue->head.ts = min_using_ts;
@@ -609,7 +666,7 @@ int get_sentinel(rma_nb_queue_t* queue, elem_t* sent) {
 	// }
 	return op_res;
 }
-
+// TODO
 int set_sentinel_next_node_info(rma_nb_queue_t* queue, u_node_info_t sentinel_info, u_node_info_t next_node_info, u_node_info_t expected_node_info) {
 	bool op_res;
 	if (USE_DEBUG) {

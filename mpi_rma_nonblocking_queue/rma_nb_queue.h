@@ -33,6 +33,8 @@ typedef union {
 typedef struct {
 	u_node_info_t head_info;
 	u_node_info_t tail_info;
+	int head_info_lock;
+	int tail_info_lock;
 } queue_state_t;
 
 typedef struct {
@@ -41,6 +43,7 @@ typedef struct {
 	val_t value;
 	int state;
 	double ts;
+	int lock;					/* lock */
 } elem_t;
 
 typedef struct {
@@ -60,17 +63,13 @@ typedef struct {
 	elem_t sentinel;			/* Sentinel element (MAIN_RANK only) */
 	MPI_Aint sentineldisp;		/* Address of sentinel in MAIN_RANK process */
 
-	elem_t head;				/* Currently using head */
+	elem_t head;				/* Currently using head (modifiable only by owner) */
 	MPI_Aint headdisp_local;	/* Address of head struct (local) */
 	MPI_Aint* headdisp;			/* Address of head struct (all processes) */
 
-	elem_t tail;				/* Currently using tail */
+	elem_t tail;				/* Currently using tail (modifiable only by owner) */
 	MPI_Aint taildisp_local;	/* Address of tail struct (local) */
 	MPI_Aint* taildisp;			/* Address of tail struct (all processes) */
-
-	bool lock;					/* Lock */
-	MPI_Aint lockdisp_local;	/* Address of lock (local) */
-	MPI_Aint* lockdisp;			/* Address of lock (all processes) */
 
 	MPI_Win win;                /* RMA access window */
 	MPI_Comm comm;              /* Communicator for the queue distribution */
@@ -84,8 +83,11 @@ typedef struct {
 	int elem_next_node_info;
 	int elem_info;
 	int elem_ts;
-	int qs_head;	// queue_state head
-	int qs_tail;	// queue_state tail
+	int elem_lock;
+	int qs_head;				// queue_state head
+	int qs_tail;				// queue_state tail
+	int qs_head_info_lock;		// queue_state head_info lock
+	int qs_tail_info_lock;		// queue_state tail_info lock
 } offsets_t;
 
 typedef struct {
