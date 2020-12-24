@@ -667,53 +667,42 @@ int get_sentinel(rma_nb_queue_t* queue, elem_t* sent) {
 	return op_res;
 }
 // TODO
-int set_sentinel_next_node_info(rma_nb_queue_t* queue, u_node_info_t sentinel_info, u_node_info_t next_node_info, u_node_info_t expected_node_info) {
+int set_sentinel_next_node_info(rma_nb_queue_t* queue, u_node_info_t sentinel_info, u_node_info_t next_node_info) {
 	bool op_res;
-	if (USE_DEBUG) {
-		l_str << "trying to set sentinel's next node info to " << print(next_node_info) << ", expected " << print(expected_node_info) << std::endl;
-		log_(l_str);
-	}
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, sentinel_info.parsed.rank);
 
-	op_res = CAS(&next_node_info, &expected_node_info, sentinel_info.parsed.rank,
-				 MPI_Aint_add(queue->sentineldisp, offsets.elem_next_node_info), queue->win);
+	op_res = MPI_Put(&next_node_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK,
+					 MPI_Aint_add(queue->sentineldisp, offsets.elem_next_node_info),
+					 sizeof(u_node_info_t), MPI_BYTE, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set sentinel's next node info to " << print(next_node_info) << std::endl;
+		l_str << "\tset sentinel's next node info to " << print(next_node_info) << std::endl;
 		log_(l_str);
 	}
 	return op_res;
 }
-int set_next_node_info(rma_nb_queue_t* queue, u_node_info_t target_elem_info, u_node_info_t next_node_info, u_node_info_t expected_node_info) {
-	bool op_res;
-	if (USE_DEBUG) {
-		l_str << "trying to set elem " << print(target_elem_info) << " next node info to " << print(next_node_info) << ", expected " << print(expected_node_info) << std::endl;
-		log_(l_str);
-	}
+int set_next_node_info(rma_nb_queue_t* queue, u_node_info_t target_elem_info, u_node_info_t next_node_info) {
+	int op_res;
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target_elem_info.parsed.rank);
 
-	op_res = CAS(&next_node_info, &expected_node_info, target_elem_info.parsed.rank,
-				 get_elem_next_node_info_disp(queue, target_elem_info), queue->win);
+	op_res = MPI_Put(&next_node_info, sizeof(u_node_info_t), MPI_BYTE, target_elem_info.parsed.rank,
+					 get_elem_next_node_info_disp(queue, target_elem_info), sizeof(u_node_info_t), MPI_BYTE, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set elem " << print(target_elem_info) << " next node info to " << print(next_node_info) << std::endl;
+		l_str << "set elem " << print(target_elem_info) << " next node info to " << print(next_node_info) << std::endl;
 		log_(l_str);
 	}
 	return op_res;
 }
-int set_state(rma_nb_queue_t* queue, u_node_info_t target_elem_info, int state, int expected_state) {
-	bool op_res;
-	if (USE_DEBUG) {
-		l_str << "trying to set elem " << print(target_elem_info) << " state to " << state << ", expected " << expected_state << std::endl;
-		log_(l_str);
-	}
+int set_state(rma_nb_queue_t* queue, u_node_info_t target_elem_info, int state) {
+	int op_res;
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target_elem_info.parsed.rank);
 
-	op_res = CAS(&state, &expected_state, target_elem_info.parsed.rank,
-				 get_elem_state_disp(queue, target_elem_info), queue->win);
+	op_res = MPI_Put(&state, sizeof(int), MPI_BYTE, target_elem_info.parsed.rank,
+					 get_elem_state_disp(queue, target_elem_info), sizeof(int), MPI_BYTE, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "\t" << (op_res ? "succeed" : "failed") << " to set elem " << print(target_elem_info) << " state to " << state << std::endl;
+		l_str << "set elem " << print(target_elem_info) << " state to " << state << std::endl;
 		log_(l_str);
 	}
 	return op_res;
