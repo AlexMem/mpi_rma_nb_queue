@@ -199,7 +199,7 @@ void unlock_head_info(rma_nb_queue_t* queue, int target) {
 	}
 }
 // lock/unlock tail_info
-void lock_head_info(rma_nb_queue_t* queue, int target) {
+void lock_tail_info(rma_nb_queue_t* queue, int target) {
 	if (USE_DEBUG) {
 		l_str << "trying to lock tail_info in target " << target << std::endl;
 		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
@@ -213,7 +213,7 @@ void lock_head_info(rma_nb_queue_t* queue, int target) {
 		log_(l_str);
 	}
 }
-void unlock_head_info(rma_nb_queue_t* queue, int target) {
+void unlock_tail_info(rma_nb_queue_t* queue, int target) {
 	bool op_res = CAS(&unlocked, &myrank, target, get_qs_tail_info_lock_disp(queue, target), queue->win);
 	// prev_locked_proc = UNDEFINED_RANK;
 	if (USE_DEBUG && op_res) {
@@ -751,54 +751,44 @@ void bcast_meta_init(bcast_meta_t* meta) {
 }
 
 int bcastpart_head_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_meta_t* meta) {
-	do {
-		get_head_info(queue, target, &meta->head_info);
-		if (meta->head_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->head_info, &meta->head);
-			if (elem->ts < meta->head.ts) return CODE_ERROR;
+	lock_head_info(queue, target);
+	get_head_info(queue, target, &meta->head_info);
+	if (meta->head_info.raw != UNDEFINED_NODE_INFO) {
+		get_elem(queue, meta->head_info, &meta->head);
+		if (elem->ts < meta->head.ts) {
+			unlock_head_info(queue, target);
+			return CODE_ERROR;
 		}
-	} while (set_head_info(queue, target, elem->info, meta->head_info) != CODE_SUCCESS);
-
+	}
+	set_head_info(queue, target, elem->info);
+	unlock_head_info(queue, target);
 	return CODE_SUCCESS;
 }
 int bcastpart_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_meta_t* meta) {
-	do {
-		get_tail_info(queue, target, &meta->tail_info);
-		if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->tail_info, &meta->tail);
-			if (elem->ts < meta->tail.ts) return CODE_ERROR;
+	lock_tail_info(queue, target);
+	get_tail_info(queue, target, &meta->tail_info);
+	if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
+		get_elem(queue, meta->tail_info, &meta->tail);
+		if (elem->ts < meta->tail.ts) {
+			unlock_tail_info(queue, target);
+			return CODE_ERROR;
 		}
-	} while (set_tail_info(queue, target, elem->info, meta->tail_info) != CODE_SUCCESS);
-
+	}
+	set_tail_info(queue, target, elem->info);
+	unlock_tail_info(queue, target);
 	return CODE_SUCCESS;
 }
 int bcastpart_head_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_meta_t* meta) {
-	if(meta->should_update_head) {
-		do {
-			get_head_info(queue, target, &meta->head_info);
-			if(meta->head_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->head_info, &meta->head);
-				if (elem->ts < meta->head.ts) {
-					meta->should_update_head = false;
-					break;
-				}
-			}
-			if (set_head_info(queue, target, elem->info, meta->head_info) == CODE_SUCCESS) break;
-		} while (1);
+	if (meta->should_update_head) {
+		if (bcastpart_head_info(queue, target, elem, meta) == CODE_ERROR) {
+			meta->should_update_head = false;
+		}
 	}
 
 	if(meta->should_update_tail) {
-		do {
-			get_tail_info(queue, target, &meta->tail_info);
-			if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->tail_info, &meta->tail);
-				if (elem->ts < meta->tail.ts) {
-					meta->should_update_tail = false;
-					break;
-				}
-			}
-			if (set_tail_info(queue, target, elem->info, meta->tail_info) == CODE_SUCCESS) break;
-		} while (1);
+		if (bcastpart_tail_info(queue, target, elem, meta) == CODE_ERROR) {
+			meta->should_update_tail = false;
+		}
 	}
 
 	if(!meta->should_update_head && !meta->should_update_tail) return CODE_ERROR;
@@ -807,31 +797,15 @@ int bcastpart_head_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bc
 }
 int bcastpart_tail_head_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_meta_t* meta) {
 	if(meta->should_update_tail) {
-		do {
-			get_tail_info(queue, target, &meta->tail_info);
-			if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->tail_info, &meta->tail);
-				if (elem->ts < meta->tail.ts) {
-					meta->should_update_tail = false;
-					break;
-				}
-			}
-			if (set_tail_info(queue, target, elem->info, meta->tail_info) == CODE_SUCCESS) break;
-		} while (1);
+		if (bcastpart_tail_info(queue, target, elem, meta) == CODE_ERROR) {
+			meta->should_update_tail = false;
+		}
 	}
 
 	if(meta->should_update_head) {
-		do {
-			get_head_info(queue, target, &meta->head_info);
-			if(meta->head_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->head_info, &meta->head);
-				if (elem->ts < meta->head.ts) {
-					meta->should_update_head = false;
-					break;
-				}
-			}
-			if (set_head_info(queue, target, elem->info, meta->head_info) == CODE_SUCCESS) break;
-		} while (1);
+		if (bcastpart_head_info(queue, target, elem, meta) == CODE_ERROR) {
+			meta->should_update_head = false;
+		}
 	}
 
 	if(!meta->should_update_head && !meta->should_update_tail) return CODE_ERROR;
