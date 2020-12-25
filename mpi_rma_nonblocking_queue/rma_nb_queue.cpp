@@ -151,7 +151,7 @@ bool CAS(const bool* origin_addr, const bool* compare_addr, int target_rank, MPI
 
 // ----- LOCKING/UNLOCKING -----
 // lock/unlock elem_t
-void lock(rma_nb_queue_t* queue, u_node_info_t target) {
+void lock_elem(rma_nb_queue_t* queue, u_node_info_t target) {
 	if (USE_DEBUG) {
 		l_str << "trying to lock elem " << print(target) << std::endl;
 		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
@@ -165,7 +165,7 @@ void lock(rma_nb_queue_t* queue, u_node_info_t target) {
 		log_(l_str);
 	}
 }
-void unlock(rma_nb_queue_t* queue, u_node_info_t target) {
+void unlock_elem(rma_nb_queue_t* queue, u_node_info_t target) {
 	bool op_res = CAS(&unlocked, &myrank, target.parsed.rank, get_elem_lock_disp(queue, target), queue->win);
 	// prev_locked_proc = UNDEFINED_RANK;
 	if (USE_DEBUG && op_res) {
@@ -218,6 +218,30 @@ void unlock_tail_info(rma_nb_queue_t* queue, int target) {
 	// prev_locked_proc = UNDEFINED_RANK;
 	if (USE_DEBUG && op_res) {
 		l_str << "unlocked tail_info in target " << target << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+		log_(l_str);
+	}
+}
+// lock/unlock sentinel
+void lock_sentinel(rma_nb_queue_t* queue) {
+	if (USE_DEBUG) {
+		l_str << "trying to lock sentinel" << std::endl;
+		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
+		log_(l_str);
+	}
+
+	while(!CAS(&myrank, &unlocked, MAIN_RANK, MPI_Aint_add(queue->sentineldisp, offsets.elem_lock), queue->win));
+
+	if (USE_DEBUG) {
+		l_str << "\tlocked tsentinel" << std::endl;
+		log_(l_str);
+	}
+}
+void unlock_sentinel(rma_nb_queue_t* queue) {
+	bool op_res = CAS(&unlocked, &myrank, MAIN_RANK, MPI_Aint_add(queue->sentineldisp, offsets.elem_lock), queue->win);
+	// prev_locked_proc = UNDEFINED_RANK;
+	if (USE_DEBUG && op_res) {
+		l_str << "unlocked sentinel" << std::endl;
 		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
 		log_(l_str);
 	}
@@ -989,23 +1013,25 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 	}
 start:
 	if (queue->state.tail_info.raw == UNDEFINED_NODE_INFO) {
+		lock_sentinel(queue);
 		get_sentinel(queue, &sentinel);
 		if (sentinel.next_node_info.raw == UNDEFINED_NODE_INFO) {
 			set_ts(new_elem, queue->ts_offset);
-			if (set_sentinel_next_node_info(queue, sentinel.info, new_elem->info, undefined_node_info)) {
-				bcast_tail_head_info(queue, *new_elem, myrank);
-				end_epoch_all(queue->win);
-				if (USE_DEBUG) {
-					l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
-					log_(l_str);
-				}
-				return CODE_SUCCESS;
+			set_sentinel_next_node_info(queue, sentinel.info, new_elem->info);
+			unlock_sentinel(queue);
+			bcast_tail_head_info(queue, *new_elem, myrank);
+			end_epoch_all(queue->win);
+			if (USE_DEBUG) {
+				l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+				log_(l_str);
 			}
-			get_sentinel(queue, &sentinel); // refresh sentinel
+			return CODE_SUCCESS;
 		}
 		queue->state.tail_info = sentinel.next_node_info;
+		unlock_sentinel(queue);
 	}
 
+	lock_elem(queue, queue->state.tail_info);
 	get_elem(queue, queue->state.tail_info, &queue->tail);
 	// g_pause();
 
@@ -1013,23 +1039,20 @@ start:
 		if (queue->tail.state == NODE_ACQUIRED) {
 			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_ts(new_elem, queue->ts_offset);
-				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
-					get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
-					if (queue->tail.state == NODE_DELETED) {
-						bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
-					} else {
-						bcast_tail_info(queue, *new_elem, myrank);
-					}
-					elem_reset(&queue->tail);
-					end_epoch_all(queue->win);
-					if (USE_DEBUG) {
-						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
-						log_(l_str);
-					}
-					return CODE_SUCCESS;
+				set_next_node_info(queue, queue->tail.info, new_elem->info);
+				unlock_elem(queue, queue->tail.info);
+				bcast_tail_info(queue, *new_elem, myrank);
+				elem_reset(&queue->tail);
+				end_epoch_all(queue->win);
+				if (USE_DEBUG) {
+					l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+					log_(l_str);
 				}
-				get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
+				return CODE_SUCCESS;
 			}
+			unlock_elem(queue, queue->tail.info);
+
+			lock_elem(queue, queue->tail.next_node_info);
 			get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
 			continue;
 		}
@@ -1037,23 +1060,27 @@ start:
 		if (queue->tail.state == NODE_DELETED) {
 			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_ts(new_elem, queue->ts_offset);
-				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
-					bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
-					elem_reset(&queue->tail);
-					end_epoch_all(queue->win);
-					if (USE_DEBUG) {
-						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
-						log_(l_str);
-					}
-					return CODE_SUCCESS;
+				set_next_node_info(queue, queue->tail.info, new_elem->info);
+				unlock_elem(queue, queue->tail.info);
+				bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
+				elem_reset(&queue->tail);
+				end_epoch_all(queue->win);
+				if (USE_DEBUG) {
+					l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+					log_(l_str);
 				}
+				return CODE_SUCCESS;
 			} else {
+				unlock_elem(queue, queue->tail.info);
+
+				lock_elem(queue, queue->tail.next_node_info);
 				get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
 				continue;
 			}
 		}
 
-		goto start;
+		unlock_elem(queue, queue->tail.info);
+		goto start; // tail became free, redo algorithm (impossible)
 	}
 }
 int dequeue(rma_nb_queue_t* queue, val_t* value) {
@@ -1080,37 +1107,42 @@ start:
 			}
 			return CODE_QUEUE_EMPTY;
 		}
-		queue->state.head_info = sentinel.next_node_info; // is not safe?
+		queue->state.head_info = sentinel.next_node_info;
 	}
 
+	lock_elem(queue, queue->state.head_info);
 	get_elem(queue, queue->state.head_info, &queue->head);
 
 	while (1) {
 		if (queue->head.state == NODE_ACQUIRED) {
-			if (set_state(queue, queue->head.info, node_state_deleted, node_state_acquired)) {
-				*value = queue->head.value;
-				get_elem(queue, queue->head.info, &queue->head); // refresh same head
-				if (queue->head.next_node_info.raw != UNDEFINED_NODE_INFO) {
-					elem_t next_head;
-					get_elem(queue, queue->head.next_node_info, &next_head);
-					bcast_head_info(queue, next_head, myrank);
-				}
-				elem_reset(&queue->head);
-				end_epoch_all(queue->win);
-				if (USE_DEBUG) {
-					l_str << "EXIT DEQUEUE with code " << CODE_SUCCESS << ", value is " << *value << std::endl;
-					log_(l_str);
-				}
-				return CODE_SUCCESS;
+			set_state(queue, queue->head.info, node_state_deleted);
+			unlock_elem(queue, queue->head.info);
+			*value = queue->head.value;
+			if (queue->head.next_node_info.raw != UNDEFINED_NODE_INFO) {
+				elem_t next_head;
+				lock_elem(queue, queue->head.next_node_info);
+				get_elem(queue, queue->head.next_node_info, &next_head);
+				unlock_elem(queue, next_head.info);
+				bcast_head_info(queue, next_head, myrank);
 			}
-			get_elem(queue, queue->head.info, &queue->head); // refresh same head
+			elem_reset(&queue->head);
+			end_epoch_all(queue->win);
+			if (USE_DEBUG) {
+				l_str << "EXIT DEQUEUE with code " << CODE_SUCCESS << ", value is " << *value << std::endl;
+				log_(l_str);
+			}
+			return CODE_SUCCESS;
 		}
 
 		if (queue->head.state == NODE_DELETED) {
 			if (queue->head.next_node_info.raw != UNDEFINED_NODE_INFO) {
+				unlock_elem(queue, queue->head.info);
+
+				lock_elem(queue, queue->head.next_node_info);
 				get_elem(queue, queue->head.next_node_info, &queue->head); // move next
 				continue;
 			} else {
+				unlock_elem(queue, queue->head.info);
 				elem_reset(&queue->head);
 				end_epoch_all(queue->win);
 				if (USE_DEBUG) {
@@ -1121,7 +1153,8 @@ start:
 			}
 		}
 
-		goto start; // head became free, redo algorithm
+		unlock_elem(queue, queue->head.info);
+		goto start; // head became free, redo algorithm (impossible)
 	}
 }
 
