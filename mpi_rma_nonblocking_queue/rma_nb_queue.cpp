@@ -158,7 +158,7 @@ void lock(rma_nb_queue_t* queue, u_node_info_t target) {
 		log_(l_str);
 	}
 
-	while(!CAS(&myrank, &unlocked, target, get_elem_lock_disp(queue, target), queue->win));
+	while(!CAS(&myrank, &unlocked, target.parsed.rank, get_elem_lock_disp(queue, target), queue->win));
 
 	if (USE_DEBUG) {
 		l_str << "\tlocked elem " << print(target) << std::endl;
@@ -166,7 +166,7 @@ void lock(rma_nb_queue_t* queue, u_node_info_t target) {
 	}
 }
 void unlock(rma_nb_queue_t* queue, u_node_info_t target) {
-	bool op_res = CAS(&unlocked, &myrank, get_elem_lock_disp(queue, target), queue->win);
+	bool op_res = CAS(&unlocked, &myrank, target.parsed.rank, get_elem_lock_disp(queue, target), queue->win);
 	// prev_locked_proc = UNDEFINED_RANK;
 	if (USE_DEBUG && op_res) {
 		l_str << "unlocked elem " << print(target) << std::endl;
@@ -190,10 +190,10 @@ void lock_head_info(rma_nb_queue_t* queue, int target) {
 	}
 }
 void unlock_head_info(rma_nb_queue_t* queue, int target) {
-	bool op_res = CAS(&unlocked, &myrank, get_qs_head_info_lock_disp(queue, target), queue->win);
+	bool op_res = CAS(&unlocked, &myrank, target, get_qs_head_info_lock_disp(queue, target), queue->win);
 	// prev_locked_proc = UNDEFINED_RANK;
 	if (USE_DEBUG && op_res) {
-		l_str << "unlocked head_info in target " << print(target) << std::endl;
+		l_str << "unlocked head_info in target " << target << std::endl;
 		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
 		log_(l_str);
 	}
@@ -214,10 +214,10 @@ void lock_head_info(rma_nb_queue_t* queue, int target) {
 	}
 }
 void unlock_head_info(rma_nb_queue_t* queue, int target) {
-	bool op_res = CAS(&unlocked, &myrank, get_qs_tail_info_lock_disp(queue, target), queue->win);
+	bool op_res = CAS(&unlocked, &myrank, target, get_qs_tail_info_lock_disp(queue, target), queue->win);
 	// prev_locked_proc = UNDEFINED_RANK;
 	if (USE_DEBUG && op_res) {
-		l_str << "unlocked tail_info in target " << print(target) << std::endl;
+		l_str << "unlocked tail_info in target " << target << std::endl;
 		// log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_MODE);
 		log_(l_str);
 	}
@@ -425,12 +425,12 @@ int get_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t* tail_info) {
 		return (op_res == MPI_SUCCESS) ? CODE_SUCCESS : CODE_ERROR;
 	// }
 }
-int set_head_info(rma_nb_queue_t* queue, int target, u_node_info_t new_head_info, u_node_info_t prev_head_info) {
+int set_head_info(rma_nb_queue_t* queue, int target, u_node_info_t new_head_info) {
 	int op_res;
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 
 	op_res = MPI_Put(&new_head_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
-					 MPI_Aint_add(queue->statedisp, offsets.qs_head), sizeof(u_node_info_t), MPI_BYTE, queue->win);
+					 MPI_Aint_add(queue->statedisp[target], offsets.qs_head), sizeof(u_node_info_t), MPI_BYTE, queue->win);
 	MPI_Win_flush(MAIN_RANK, queue->win);
 
 	if (USE_DEBUG) {
@@ -439,12 +439,12 @@ int set_head_info(rma_nb_queue_t* queue, int target, u_node_info_t new_head_info
 	}
 	return op_res;
 }
-int set_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t new_tail_info, u_node_info_t prev_tail_info) {
+int set_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t new_tail_info) {
 	int op_res;
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 
 	op_res = MPI_Put(&new_tail_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
-					 MPI_Aint_add(queue->statedisp, offsets.qs_tail), sizeof(u_node_info_t), MPI_BYTE, queue->win);
+					 MPI_Aint_add(queue->statedisp[target], offsets.qs_tail), sizeof(u_node_info_t), MPI_BYTE, queue->win);
 	MPI_Win_flush(MAIN_RANK, queue->win);
 
 	if (USE_DEBUG) {
@@ -666,7 +666,7 @@ int get_sentinel(rma_nb_queue_t* queue, elem_t* sent) {
 	// }
 	return op_res;
 }
-// TODO
+
 int set_sentinel_next_node_info(rma_nb_queue_t* queue, u_node_info_t sentinel_info, u_node_info_t next_node_info) {
 	bool op_res;
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, sentinel_info.parsed.rank);
