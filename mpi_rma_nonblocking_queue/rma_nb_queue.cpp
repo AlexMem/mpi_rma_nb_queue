@@ -446,7 +446,7 @@ double get_min_using_ts(rma_nb_queue_t* queue) {
 
 		get_head_info(queue, target, &queue->head.info);
 		get_tail_info(queue, target, &queue->tail.info);
-		if(queue->head.info.raw == UNDEFINED_NODE_INFO) {
+		if(queue->head.info.raw != UNDEFINED_NODE_INFO) {
 			get_elem(queue, queue->head.info, &queue->head);
 		} else {
 			queue->head.ts = min_using_ts;
