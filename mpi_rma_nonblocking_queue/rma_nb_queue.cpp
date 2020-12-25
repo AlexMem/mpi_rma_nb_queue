@@ -989,7 +989,21 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 	}
 start:
 	if (queue->state.tail_info.raw == UNDEFINED_NODE_INFO) {
-		
+		get_sentinel(queue, &sentinel);
+		if (sentinel.next_node_info.raw == UNDEFINED_NODE_INFO) {
+			set_ts(new_elem, queue->ts_offset);
+			if (set_sentinel_next_node_info(queue, sentinel.info, new_elem->info, undefined_node_info)) {
+				bcast_tail_head_info(queue, *new_elem, myrank);
+				end_epoch_all(queue->win);
+				if (USE_DEBUG) {
+					l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+					log_(l_str);
+				}
+				return CODE_SUCCESS;
+			}
+			get_sentinel(queue, &sentinel); // refresh sentinel
+		}
+		queue->state.tail_info = sentinel.next_node_info;
 	}
 
 	get_elem(queue, queue->state.tail_info, &queue->tail);
@@ -997,11 +1011,46 @@ start:
 
 	while (1) {
 		if (queue->tail.state == NODE_ACQUIRED) {
-			
+			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
+				set_ts(new_elem, queue->ts_offset);
+				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
+					get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
+					if (queue->tail.state == NODE_DELETED) {
+						bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
+					} else {
+						bcast_tail_info(queue, *new_elem, myrank);
+					}
+					elem_reset(&queue->tail);
+					end_epoch_all(queue->win);
+					if (USE_DEBUG) {
+						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+						log_(l_str);
+					}
+					return CODE_SUCCESS;
+				}
+				get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
+			}
+			get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
+			continue;
 		}
 
 		if (queue->tail.state == NODE_DELETED) {
-			
+			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
+				set_ts(new_elem, queue->ts_offset);
+				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
+					bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
+					elem_reset(&queue->tail);
+					end_epoch_all(queue->win);
+					if (USE_DEBUG) {
+						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
+						log_(l_str);
+					}
+					return CODE_SUCCESS;
+				}
+			} else {
+				get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
+				continue;
+			}
 		}
 
 		goto start;
