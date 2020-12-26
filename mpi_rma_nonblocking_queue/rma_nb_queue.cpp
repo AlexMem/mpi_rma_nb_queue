@@ -16,7 +16,7 @@
 #include "include/utils.h"
 
 #define USE_DEBUG 0
-#define USE_MPI_CALLS_COUNTING 1
+#define USE_MPI_CALLS_COUNTING 0
 
 #define LOG_PRINT_CONSOLE 0b10
 #define LOG_PRINT_FILE 0b01
