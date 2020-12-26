@@ -16,7 +16,7 @@
 #include "include/utils.h"
 
 #define USE_DEBUG 0
-#define USE_MPI_CALLS_COUNTING 1
+#define USE_MPI_CALLS_COUNTING 0
 
 #define LOG_PRINT_CONSOLE 0b10
 #define LOG_PRINT_FILE 0b01
@@ -233,7 +233,7 @@ void lock_sentinel(rma_nb_queue_t* queue) {
 	while(!CAS(&myrank, &unlocked, MAIN_RANK, MPI_Aint_add(queue->sentineldisp, offsets.elem_lock), queue->win));
 
 	if (USE_DEBUG) {
-		l_str << "\tlocked tsentinel" << std::endl;
+		l_str << "\tlocked sentinel" << std::endl;
 		log_(l_str);
 	}
 }
@@ -451,28 +451,28 @@ int get_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t* tail_info) {
 }
 int set_head_info(rma_nb_queue_t* queue, int target, u_node_info_t new_head_info) {
 	int op_res;
-	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
+	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
 
-	op_res = MPI_Put(&new_head_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
+	op_res = MPI_Put(&new_head_info, sizeof(u_node_info_t), MPI_BYTE, target, 
 					 MPI_Aint_add(queue->statedisp[target], offsets.qs_head), sizeof(u_node_info_t), MPI_BYTE, queue->win);
-	MPI_Win_flush(MAIN_RANK, queue->win);
+	MPI_Win_flush(target, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "set head info in target " << MAIN_RANK << " to " << print(new_head_info) << std::endl;
+		l_str << "set head info in target " << target << " to " << print(new_head_info) << std::endl;
 		log_(l_str);
 	}
 	return op_res;
 }
 int set_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t new_tail_info) {
 	int op_res;
-	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
+	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
 
-	op_res = MPI_Put(&new_tail_info, sizeof(u_node_info_t), MPI_BYTE, MAIN_RANK, 
+	op_res = MPI_Put(&new_tail_info, sizeof(u_node_info_t), MPI_BYTE, target, 
 					 MPI_Aint_add(queue->statedisp[target], offsets.qs_tail), sizeof(u_node_info_t), MPI_BYTE, queue->win);
-	MPI_Win_flush(MAIN_RANK, queue->win);
+	MPI_Win_flush(target, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "set tail info in target " << MAIN_RANK << " to " << print(new_tail_info) << std::endl;
+		l_str << "set tail info in target " << target << " to " << print(new_tail_info) << std::endl;
 		log_(l_str);
 	}
 	return op_res;
@@ -973,6 +973,7 @@ int elem_init(rma_nb_queue_t* queue, elem_t** elem, val_t value) {
 	queue->data[position].next_node_info.raw = UNDEFINED_NODE_INFO;
 	queue->data[position].info.parsed.rank = myrank;
 	queue->data[position].info.parsed.position = position;
+	queue->data[position].lock = UNDEFINED_RANK;
 
 	*elem = &queue->data[position];
 	return CODE_SUCCESS;
@@ -1031,8 +1032,9 @@ start:
 		unlock_sentinel(queue);
 	}
 
-	lock_elem(queue, queue->state.tail_info);
-	get_elem(queue, queue->state.tail_info, &queue->tail);
+	u_node_info_t tail_info = queue->state.tail_info;
+	lock_elem(queue, tail_info);
+	get_elem(queue, tail_info, &queue->tail);
 	// g_pause();
 
 	while (1) {
@@ -1110,8 +1112,9 @@ start:
 		queue->state.head_info = sentinel.next_node_info;
 	}
 
-	lock_elem(queue, queue->state.head_info);
-	get_elem(queue, queue->state.head_info, &queue->head);
+	u_node_info_t head_info = queue->state.head_info;
+	lock_elem(queue, head_info);
+	get_elem(queue, head_info, &queue->head);
 
 	while (1) {
 		if (queue->head.state == NODE_ACQUIRED) {
