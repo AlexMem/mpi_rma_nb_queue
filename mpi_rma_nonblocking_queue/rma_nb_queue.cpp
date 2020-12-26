@@ -592,7 +592,7 @@ void cleaning(rma_nb_queue_t* queue, int from) {
 
 	double min_ts = get_min_using_ts(queue);
 	for(int i = 0; queue->data[from+i].state == NODE_DELETED; ++i) {
-		if(queue->data[from+i].ts < min_ts) {
+		if(queue->data[from+i].ts < min_ts && queue->data[from+i].lock == UNDEFINED_RANK) {
 			queue->data[from+i].state = NODE_FREE;
 			
 			if(USE_DEBUG) {
