@@ -20,7 +20,7 @@
 
 #define LOG_PRINT_CONSOLE 0b10
 #define LOG_PRINT_FILE 0b01
-#define LOG_PRINT_MODE 0b01 // 0b10 - console only, 0b01 - file (one per process) only, 0b11 - console and file
+#define LOG_PRINT_MODE 0b00 // 0b10 - console only, 0b01 - file (one per process) only, 0b11 - console and file
 
 void exclude_rank(rand_provider_t* provider, int rank);
 int get_next_node_rand(rand_provider_t* provider);
@@ -950,7 +950,13 @@ start:
 	get_elem(queue, queue->state.tail_info, &queue->tail);
 	// g_pause();
 
+	int hops = 0;
 	while (1) {
+		if (hops >= MAX_NUM_OF_HOPS) {
+			goto start;
+		}
+		++hops;
+
 		if (queue->tail.state == NODE_ACQUIRED) {
 			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_ts(new_elem, queue->ts_offset);
@@ -1026,7 +1032,13 @@ start:
 
 	get_elem(queue, queue->state.head_info, &queue->head);
 
+	int hops = 0;
 	while (1) {
+		if (hops >= MAX_NUM_OF_HOPS) {
+			goto start;
+		}
+		++hops;
+
 		if (queue->head.state == NODE_ACQUIRED) {
 			if (set_state(queue, queue->head.info, node_state_deleted, node_state_acquired)) {
 				*value = queue->head.value;
@@ -1309,9 +1321,9 @@ void calc_and_print_total_mpi_calls(rma_nb_queue_t* queue, mpi_call_counter_t* c
 		MPI_Send(counter->to, queue->n_proc, MPI_INT, MAIN_RANK, 0, queue->comm);
 	}
 }
-void check_results(rma_nb_queue_t* queue, test_result result) {
+bool check_results(rma_nb_queue_t* queue, test_result result) {
+	bool success;
 	if(myrank == MAIN_RANK) {
-		bool success;
 		int actual_size;
 		int expected_size;
 		test_result current;
@@ -1335,6 +1347,8 @@ void check_results(rma_nb_queue_t* queue, test_result result) {
 		MPI_Send(&result, sizeof(test_result), MPI_BYTE,
 				 MAIN_RANK, 0, queue->comm);
 	}
+	MPI_Bcast(&success, 1, sizeof(bool)*MPI_BYTE, MAIN_RANK, queue->comm);
+	return success;
 }
 void check_using_memory_model(rma_nb_queue_t* queue) {
 	int *memory_model;
@@ -1597,7 +1611,7 @@ void test_deq_multiple_proc(int argc, char** argv) {
 
 	rma_nb_queue_free(queue);
 }
-void test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_Comm comm) {
+bool test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_Comm comm, double* result_thrpt) {
 	log_("STARTING TEST_ENQ_DEQ_M_PROC\n");
 	l_str << "size_per_node: " << size_per_node
 			<< "\n\tnum_of_ops_per_node: " << num_of_ops_per_node << std::endl;
@@ -1681,10 +1695,11 @@ void test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_
 		MPI_Barrier(queue->comm);
 	}
 
-	check_results(queue, result);
+	bool test_result = check_results(queue, result);
 
 	if (myrank == MAIN_RANK) {
-		l_str << "time taken: " << result_time << " s\tthroughput: " << calc_throughput(num_of_ops_per_node, queue->n_proc, result_time) << " ops/s" << std::endl;
+		*result_thrpt = calc_throughput(num_of_ops_per_node, queue->n_proc, result_time);
+		l_str << "time taken: " << result_time << " s\tthroughput: " << *result_thrpt << " ops/s" << std::endl;
 		log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_FILE);
 	}
 
@@ -1696,6 +1711,7 @@ void test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_
 
 	rma_nb_queue_free(queue);
 	log_("EXITING TEST_ENQ_DEQ_M_PROC\n");
+	return test_result;
 }
 void test_complex(int size_per_node, int num_of_ops_per_node) {
 	log_("STARTING TEST_COMPEX\n");
@@ -1713,7 +1729,7 @@ void test_complex(int size_per_node, int num_of_ops_per_node) {
 		if (i >= world_rank) color = 0;
 
 		MPI_Comm_split(MPI_COMM_WORLD, color, world_rank, &temp_comm);
-		if (i >= world_rank) test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, temp_comm);
+		if (i >= world_rank) test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, temp_comm, 0);
 		MPI_Comm_free(&temp_comm);
 
 		if(world_rank == MAIN_RANK) std::cout << "--------------------------------------------------" << std::endl;
@@ -1726,8 +1742,9 @@ void test_complex(int size_per_node, int num_of_ops_per_node) {
 }
 void tests(int argc, char** argv) {
 	int size_per_node = 150000;
-	int num_of_ops_per_node = 10000;
+	int num_of_ops_per_node = 25000;
 	int n_proc;
+	int test_calls = 0;
 
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
@@ -1735,7 +1752,7 @@ void tests(int argc, char** argv) {
 
 	// srand(time(0) * myrank);
 	log_init(myrank);
-	mpi_call_counter_init(&mpi_call_counter, n_proc);
+	// mpi_call_counter_init(&mpi_call_counter, n_proc);
 
 	submit_hostname(MPI_COMM_WORLD);
 	// if(myrank == MAIN_RANK) {
@@ -1747,7 +1764,28 @@ void tests(int argc, char** argv) {
 	// test_deq_single_proc(argc, argv);
 	// test_deq_multiple_proc(argc, argv);
 	// test_wtime_wtick();
-	test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD);
+	// test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD);
+
+	double thrpt_sum = 0;
+	double tests_num = 10;
+	for (size_t i = 0; i < tests_num; ++i) {
+		double thrpt = 0;
+		test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD, &thrpt);
+		thrpt_sum += thrpt;
+	}
+	if (myrank == MAIN_RANK) {
+		l_str << "Throughput avg: " << thrpt_sum/tests_num << " ops/s" << std::endl;
+		log_(l_str, LOG_PRINT_CONSOLE);
+	}
+
+	// while(test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD)){
+	// 	++test_calls;
+	// }
+	// if (myrank == MAIN_RANK) {
+	// 	l_str << "test calls: " << test_calls << std::endl;
+	// 	log_(l_str);
+	// }
+
 	// test_complex(size_per_node, num_of_ops_per_node);
 
 	// mpi_call_counter_free(&mpi_call_counter);

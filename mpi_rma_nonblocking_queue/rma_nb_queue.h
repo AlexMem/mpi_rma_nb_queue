@@ -20,6 +20,8 @@
 #define NODE_ACQUIRED 1
 #define NODE_DELETED 2
 
+#define MAX_NUM_OF_HOPS 50
+
 typedef int val_t;
 
 typedef union {
