@@ -17,10 +17,17 @@
 
 #define USE_DEBUG 0
 #define USE_MPI_CALLS_COUNTING 0
+#define USE_TIMINGS 1
 
 #define LOG_PRINT_CONSOLE 0b10
 #define LOG_PRINT_FILE 0b01
-#define LOG_PRINT_MODE 0b00 // 0b10 - console only, 0b01 - file (one per process) only, 0b11 - console and file
+#define LOG_PRINT_MODE 0b01 // 0b10 - console only, 0b01 - file (one per process) only, 0b11 - console and file
+
+#define TIMING_ENQ_OVERALL 10
+#define TIMING_ENQ_HOPPING 11
+#define TIMING_DEQ_OVERALL 20
+#define TIMING_DEQ_HOPPING 21
+#define TIMING_BCAST_OVERALL 30
 
 void exclude_rank(rand_provider_t* provider, int rank);
 int get_next_node_rand(rand_provider_t* provider);
@@ -34,21 +41,81 @@ typedef struct {
 	unsigned int added;
 	unsigned int deleted;
 } test_result;
+
 typedef struct {
 	int* to;
 	int n;
 } mpi_call_counter_t;
+
+typedef struct {
+	double sum = 0.0; // ms
+	unsigned long long n = 0;
+} timing_t;
+typedef struct {
+	timing_t enq_overall;
+	timing_t enq_hopping;
+	timing_t deq_overall;
+	timing_t deq_hopping;
+	timing_t bcast_overall;
+} timings_t;
 
 std::string log_file_name;
 std::ofstream log_file;
 std::ostringstream l_str;
 
 mpi_call_counter_t mpi_call_counter;
+timings_t timings;
 
 int myrank;
 offsets_t offsets;
 
 
+
+// ----- TIMING -----
+double calc_time(int start, int end) {
+	return ((double)(end - start)) / CLOCKS_PER_SEC; // s
+}
+double record(int start, int end, int type) {
+	if (USE_TIMINGS == 0) return 0;
+
+	double timing = calc_time(start, end)*1000; // ms
+	switch (type) {
+	case TIMING_ENQ_OVERALL:
+		timings.enq_overall.sum += timing;
+		++timings.enq_overall.n;
+		break;
+	case TIMING_ENQ_HOPPING:
+		timings.enq_hopping.sum += timing;
+		++timings.enq_hopping.n;
+		break;
+	case TIMING_DEQ_OVERALL:
+		timings.deq_overall.sum += timing;
+		++timings.deq_overall.n;
+		break;
+	case TIMING_DEQ_HOPPING:
+		timings.deq_hopping.sum += timing;
+		++timings.deq_hopping.n;
+		break;
+	case TIMING_BCAST_OVERALL:
+		timings.bcast_overall.sum += timing;
+		++timings.bcast_overall.n;
+		break;
+	default:
+		break;
+	}
+	return timing;
+}
+void sum(timing_t* result, timing_t* addition) {
+	result->sum += addition->sum;
+	result->n += addition->n;
+}
+void sum(timings_t* result, timings_t* addition) {
+	sum(&result->enq_overall, &addition->enq_overall);
+	sum(&result->enq_hopping, &addition->enq_hopping);
+	sum(&result->deq_overall, &addition->deq_overall);
+	sum(&result->deq_hopping, &addition->deq_hopping);
+	sum(&result->bcast_overall, &addition->bcast_overall);
+}
 
 // ----- LOGGING -----
 void log_init(int rank) {
@@ -754,6 +821,8 @@ int bcastpart_tail_head_info(rma_nb_queue_t* queue, int target, elem_t* elem, bc
 	return CODE_SUCCESS;
 }
 int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_rank, bcast_meta_t* meta) {
+	int bcast_overall_start = clock();
+
 	int op_res;
 	int target_node;
 	rand_provider_t provider;
@@ -773,6 +842,7 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 		op_res = meta->bcast_method(queue, priority_rank, elem, meta);
 		if(op_res == CODE_ERROR) {
 			rand_provider_free(&provider);
+			record(bcast_overall_start, clock(), TIMING_BCAST_OVERALL);
 			return CODE_PARTLY_SUCCESS;
 		}
 		exclude_rank(&provider, priority_rank);
@@ -785,6 +855,7 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 	op_res = meta->bcast_method(queue, myrank, elem, meta);	// send to me
 	if(op_res == CODE_ERROR) {
 		rand_provider_free(&provider);
+		record(bcast_overall_start, clock(), TIMING_BCAST_OVERALL);
 		return CODE_PARTLY_SUCCESS;
 	}
 	exclude_rank(&provider, myrank);
@@ -797,12 +868,14 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 		}
 		if (target_node == UNDEFINED_RANK) {
 			rand_provider_free(&provider);
+			record(bcast_overall_start, clock(), TIMING_BCAST_OVERALL);
 			return CODE_SUCCESS;
 		}
 
 		op_res = meta->bcast_method(queue, target_node, elem, meta); // send to target_node
 		if(op_res == CODE_ERROR) {
 			rand_provider_free(&provider);
+			record(bcast_overall_start, clock(), TIMING_BCAST_OVERALL);
 			return CODE_PARTLY_SUCCESS;
 		}
 	}
@@ -895,6 +968,8 @@ int elem_init(rma_nb_queue_t* queue, elem_t** elem, val_t value) {
 	return CODE_SUCCESS;
 }
 int enqueue(rma_nb_queue_t* queue, val_t value) {
+	int enq_overall_start = clock();
+
 	int op_res;
 
 	int node_state_free = NODE_FREE;
@@ -921,6 +996,7 @@ int enqueue(rma_nb_queue_t* queue, val_t value) {
 			l_str << "EXIT ENQUEUE with code " << CODE_DATA_BUFFER_FULL << std::endl;
 			log_(l_str);
 		}
+		record(enq_overall_start, clock(), TIMING_ENQ_OVERALL);
 		return CODE_DATA_BUFFER_FULL;
 	}
 
@@ -940,6 +1016,7 @@ start:
 					l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
 					log_(l_str);
 				}
+				record(enq_overall_start, clock(), TIMING_ENQ_OVERALL);
 				return CODE_SUCCESS;
 			}
 			get_sentinel(queue, &sentinel); // refresh sentinel
@@ -950,17 +1027,20 @@ start:
 	get_elem(queue, queue->state.tail_info, &queue->tail);
 	// g_pause();
 
-	int hops = 0;
+	// int hops = 0;
+	int enq_hopping_start = clock();
 	while (1) {
-		if (hops >= MAX_NUM_OF_HOPS) {
-			goto start;
-		}
-		++hops;
+		// if (hops >= MAX_NUM_OF_HOPS) {
+		// 	goto start;
+		// }
+		// ++hops;
 
 		if (queue->tail.state == NODE_ACQUIRED) {
 			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_ts(new_elem, queue->ts_offset);
 				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
+					record(enq_hopping_start, clock(), TIMING_ENQ_HOPPING);
+
 					get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
 					if (queue->tail.state == NODE_DELETED) {
 						bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
@@ -973,6 +1053,7 @@ start:
 						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
 						log_(l_str);
 					}
+					record(enq_overall_start, clock(), TIMING_ENQ_OVERALL);
 					return CODE_SUCCESS;
 				}
 				get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
@@ -985,6 +1066,8 @@ start:
 			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_ts(new_elem, queue->ts_offset);
 				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
+					record(enq_hopping_start, clock(), TIMING_ENQ_HOPPING);
+
 					bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
 					elem_reset(&queue->tail);
 					end_epoch_all(queue->win);
@@ -992,6 +1075,7 @@ start:
 						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
 						log_(l_str);
 					}
+					record(enq_overall_start, clock(), TIMING_ENQ_OVERALL);
 					return CODE_SUCCESS;
 				}
 			} else {
@@ -1004,6 +1088,8 @@ start:
 	}
 }
 int dequeue(rma_nb_queue_t* queue, val_t* value) {
+	int deq_overall_start = clock();
+
 	int op_res;
 
 	int node_state_free = NODE_FREE;
@@ -1025,6 +1111,7 @@ start:
 				l_str << "EXIT ENQUEUE with code " << CODE_QUEUE_EMPTY << std::endl;
 				log_(l_str);
 			}
+			record(deq_overall_start, clock(), TIMING_DEQ_OVERALL);
 			return CODE_QUEUE_EMPTY;
 		}
 		queue->state.head_info = sentinel.next_node_info; // is not safe?
@@ -1032,15 +1119,17 @@ start:
 
 	get_elem(queue, queue->state.head_info, &queue->head);
 
-	int hops = 0;
+	// int hops = 0;
+	int deq_hopping_start = clock();
 	while (1) {
-		if (hops >= MAX_NUM_OF_HOPS) {
-			goto start;
-		}
-		++hops;
+		// if (hops >= MAX_NUM_OF_HOPS) {
+		// 	goto start;
+		// }
+		// ++hops;
 
 		if (queue->head.state == NODE_ACQUIRED) {
 			if (set_state(queue, queue->head.info, node_state_deleted, node_state_acquired)) {
+				record(deq_hopping_start, clock(), TIMING_DEQ_HOPPING);
 				*value = queue->head.value;
 				get_elem(queue, queue->head.info, &queue->head); // refresh same head
 				if (queue->head.next_node_info.raw != UNDEFINED_NODE_INFO) {
@@ -1054,6 +1143,7 @@ start:
 					l_str << "EXIT DEQUEUE with code " << CODE_SUCCESS << ", value is " << *value << std::endl;
 					log_(l_str);
 				}
+				record(deq_overall_start, clock(), TIMING_DEQ_OVERALL);
 				return CODE_SUCCESS;
 			}
 			get_elem(queue, queue->head.info, &queue->head); // refresh same head
@@ -1064,12 +1154,14 @@ start:
 				get_elem(queue, queue->head.next_node_info, &queue->head); // move next
 				continue;
 			} else {
+				record(deq_hopping_start, clock(), TIMING_DEQ_HOPPING);
 				elem_reset(&queue->head);
 				end_epoch_all(queue->win);
 				if (USE_DEBUG) {
 					l_str << "EXIT DEQUEUE with code " << CODE_QUEUE_EMPTY << std::endl;
 					log_(l_str);
 				}
+				record(deq_overall_start, clock(), TIMING_DEQ_OVERALL);
 				return CODE_QUEUE_EMPTY;
 			}
 		}
@@ -1243,6 +1335,26 @@ std::string print(mpi_call_counter_t* counter) {
 
 	return s.str();
 }
+std::string print(timing_t* timing) {
+	std::ostringstream s;
+
+	s << timing->sum/timing->n << " ms" << '\t' << "(" << timing->sum << ", " << timing->n << ")";
+
+	return s.str();
+}
+std::string print(timings_t* times) {
+	std::ostringstream s;
+
+	s << "timings avg:" << std::endl;
+	s << '\t' <<  "enq_overall:" << '\t' << print(&times->enq_overall) << std::endl;
+	s << '\t' <<  "enq_hopping:" << '\t' << print(&times->enq_hopping) << std::endl;
+	s << '\t' <<  "deq_overall:" << '\t' << print(&times->deq_overall) << std::endl;
+	s << '\t' <<  "deq_hopping:" << '\t' << print(&times->deq_hopping) << std::endl;
+	s << '\t' <<  "bcast_overall:" << '\t' << print(&times->bcast_overall) << std::endl;
+
+	return s.str();
+}
+
 void file_print(rma_nb_queue_t* queue, const char* path) {
 	std::ofstream file;
 	file.open(path);
@@ -1319,6 +1431,30 @@ void calc_and_print_total_mpi_calls(rma_nb_queue_t* queue, mpi_call_counter_t* c
 		// mpi_call_counter_free(&total);
 	} else {
 		MPI_Send(counter->to, queue->n_proc, MPI_INT, MAIN_RANK, 0, queue->comm);
+	}
+}
+void calc_and_print_timings(rma_nb_queue_t* queue, timings_t* times) {
+	if(USE_TIMINGS == 0) return;
+	
+	l_str << print(times);
+	log_(l_str);
+	if (myrank == MAIN_RANK) {
+		timings_t current;
+		timings_t total;
+		
+		for (int i = 0; i < queue->n_proc; ++i) {
+			if (i == myrank) continue;
+			MPI_Recv(&current, sizeof(timings_t), MPI_BYTE, i, 
+					 MPI_ANY_TAG, queue->comm, MPI_STATUS_IGNORE);
+			sum(&total, &current);
+		}
+		sum(&total, times);
+
+		l_str << "total " << print(&total);
+		log_(l_str, LOG_PRINT_CONSOLE | LOG_PRINT_FILE);
+		// mpi_call_counter_free(&total);
+	} else {
+		MPI_Send(times, sizeof(timings_t), MPI_BYTE, MAIN_RANK, 0, queue->comm);
 	}
 }
 bool check_results(rma_nb_queue_t* queue, test_result result) {
@@ -1708,6 +1844,7 @@ bool test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_
 	log_(l_str);
 
 	calc_and_print_total_mpi_calls(queue, &mpi_call_counter);
+	calc_and_print_timings(queue, &timings);
 
 	rma_nb_queue_free(queue);
 	log_("EXITING TEST_ENQ_DEQ_M_PROC\n");
@@ -1755,6 +1892,11 @@ void tests(int argc, char** argv) {
 	// mpi_call_counter_init(&mpi_call_counter, n_proc);
 
 	submit_hostname(MPI_COMM_WORLD);
+	if (USE_TIMINGS) {
+		l_str << "timings init: " << print(&timings);
+		log_(l_str);
+	}
+
 	// if(myrank == MAIN_RANK) {
 	// 	test_get_next_node_rand();
 	// }
@@ -1766,17 +1908,17 @@ void tests(int argc, char** argv) {
 	// test_wtime_wtick();
 	// test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD);
 
-	double thrpt_sum = 0;
-	double tests_num = 10;
-	for (size_t i = 0; i < tests_num; ++i) {
+	// double thrpt_sum = 0;
+	// double tests_num = 10;
+	// for (size_t i = 0; i < tests_num; ++i) {
 		double thrpt = 0;
 		test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD, &thrpt);
-		thrpt_sum += thrpt;
-	}
-	if (myrank == MAIN_RANK) {
-		l_str << "Throughput avg: " << thrpt_sum/tests_num << " ops/s" << std::endl;
-		log_(l_str, LOG_PRINT_CONSOLE);
-	}
+	// 	thrpt_sum += thrpt;
+	// }
+	// if (myrank == MAIN_RANK) {
+	// 	l_str << "Throughput avg: " << thrpt_sum/tests_num << " ops/s" << std::endl;
+	// 	log_(l_str, LOG_PRINT_CONSOLE);
+	// }
 
 	// while(test_enq_deq_multiple_proc(size_per_node, num_of_ops_per_node, MPI_COMM_WORLD)){
 	// 	++test_calls;
