@@ -1849,8 +1849,8 @@ void test_complex(int size_per_node, int num_of_ops_per_node) {
 	log_("EXITING TEST_COMPLEX\n");
 }
 void tests(int argc, char** argv) {
-	int size_per_node = 50000;
-	int num_of_ops_per_node = 25000;
+	int size_per_node = 15000;
+	int num_of_ops_per_node = 10000;
 	int n_proc;
 	int test_calls = 0;
 
