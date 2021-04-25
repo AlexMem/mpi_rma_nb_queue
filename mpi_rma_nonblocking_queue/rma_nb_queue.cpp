@@ -233,18 +233,16 @@ int disps_init(rma_nb_queue_t* queue) {
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->basedisp);
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->datadisp);
 	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->statedisp);
-	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->headdisp);
-	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->taildisp);
+	MPI_Alloc_mem(sizeof(MPI_Aint) * queue->n_proc, MPI_INFO_NULL, &queue->operdisp);
 	if ((queue->basedisp == NULL) || (queue->datadisp == NULL) ||
-		(queue->statedisp == NULL) || (queue->headdisp == NULL) || (queue->taildisp == NULL)) {
+		(queue->statedisp == NULL) || (queue->operdisp == NULL)) {
 		return CODE_ERROR;
 	}
 
 	MPI_Allgather(&queue->basedisp_local, 1, MPI_AINT, queue->basedisp, 1, MPI_AINT, queue->comm);
 	MPI_Allgather(&queue->datadisp_local, 1, MPI_AINT, queue->datadisp, 1, MPI_AINT, queue->comm);
 	MPI_Allgather(&queue->statedisp_local, 1, MPI_AINT, queue->statedisp, 1, MPI_AINT, queue->comm);
-	MPI_Allgather(&queue->headdisp_local, 1, MPI_AINT, queue->headdisp, 1, MPI_AINT, queue->comm);
-	MPI_Allgather(&queue->taildisp_local, 1, MPI_AINT, queue->taildisp, 1, MPI_AINT, queue->comm);
+	MPI_Allgather(&queue->operdisp_local, 1, MPI_AINT, queue->operdisp, 1, MPI_AINT, queue->comm);
 	MPI_Bcast(&queue->sentineldisp, 1, MPI_AINT, MAIN_RANK, queue->comm);
 
 	return CODE_SUCCESS;
@@ -279,11 +277,8 @@ int rma_nb_queue_init(rma_nb_queue_t** queue, int size_per_node, MPI_Comm comm) 
 	(*queue)->state.tail_info.raw = UNDEFINED_NODE_INFO;
 	MPI_Get_address(&(*queue)->state, &(*queue)->statedisp_local);
 
-	elem_reset(&(*queue)->head);
-	MPI_Get_address(&(*queue)->head, &(*queue)->headdisp_local);
-	
-	elem_reset(&(*queue)->tail);
-	MPI_Get_address(&(*queue)->tail, &(*queue)->taildisp_local);
+	elem_reset(&(*queue)->oper);
+	MPI_Get_address(&(*queue)->oper, &(*queue)->operdisp_local);
 
 	if (myrank == MAIN_RANK) {
 		sentinel_init(&(*queue)->sentinel);
@@ -308,11 +303,11 @@ void rma_nb_queue_free(rma_nb_queue_t* queue) {
 	MPI_Free_mem(queue->basedisp);
 	MPI_Free_mem(queue->datadisp);
 	MPI_Free_mem(queue->statedisp);
-	MPI_Free_mem(queue->headdisp);
-	MPI_Free_mem(queue->taildisp);
+	MPI_Free_mem(queue->operdisp);
 	MPI_Free_mem(queue->data);
 	MPI_Free_mem(queue);
 }
+
 
 
 void begin_epoch_one(int rank, MPI_Win win) {
@@ -444,58 +439,38 @@ MPI_Aint get_elem_state_disp(rma_nb_queue_t* queue, u_node_info_t elem_info) {
 	return MPI_Aint_add(get_elem_disp(queue, elem_info), offsets.elem_state);
 }
 
-int get_currently_using_head(rma_nb_queue_t* queue, int target, elem_t* head) {
+int get_currently_using_elem(rma_nb_queue_t* queue, int target, elem_t* elem) {
 	int op_res;
 	if (USE_DEBUG) {
-		l_str << "trying get currently using head on rank " << target << ", disp " << queue->headdisp[target] << std::endl;
+		l_str << "trying get currently using elem on rank " << target << ", disp " << queue->operdisp[target] << std::endl;
 		log_(l_str);
 	}
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
 
-	op_res = MPI_Get_accumulate(head, sizeof(elem_t), MPI_BYTE,
-								head, sizeof(elem_t), MPI_BYTE,
-								target, queue->headdisp[target], sizeof(elem_t), MPI_BYTE,
+	op_res = MPI_Get_accumulate(elem, sizeof(elem_t), MPI_BYTE,
+								elem, sizeof(elem_t), MPI_BYTE,
+								target, queue->operdisp[target], sizeof(elem_t), MPI_BYTE,
 								MPI_NO_OP, queue->win);
 	MPI_Win_flush(target, queue->win);
 
 	if (USE_DEBUG) {
-		l_str << "\t" << op_res << " got currently using head " << print(*head) << std::endl;
-		log_(l_str);
-	}
-	//g_pause();
-	return op_res;
-}
-int get_currently_using_tail(rma_nb_queue_t* queue, int target, elem_t* tail) {
-	int op_res;
-	if (USE_DEBUG) {
-		l_str << "trying get currently using tail on rank " << target << ", disp " << queue->taildisp[target] << std::endl;
-		log_(l_str);
-	}
-	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
-
-	op_res = MPI_Get_accumulate(tail, sizeof(elem_t), MPI_BYTE,
-								tail, sizeof(elem_t), MPI_BYTE,
-								target, queue->taildisp[target], sizeof(elem_t), MPI_BYTE,
-								MPI_NO_OP, queue->win);
-	MPI_Win_flush(target, queue->win);
-
-	if (USE_DEBUG) {
-		l_str << "\t" << op_res << " got currently using tail " << print(*tail) << std::endl;
+		l_str << "\t" << op_res << " got currently using elem " << print(*elem) << std::endl;
 		log_(l_str);
 	}
 	//g_pause();
 	return op_res;
 }
 double get_min_using_ts(rma_nb_queue_t* queue) {
-	double min_using_ts;
+	double min_using_ts = __DBL_MAX__;
 	int target;
 	rand_provider_t rand_provider;
 	rand_provider_init(&rand_provider, queue->n_proc);
 
-	get_elem(queue, queue->state.head_info, &queue->head);
-	get_elem(queue, queue->state.tail_info, &queue->tail);
-	min_using_ts = std::min(queue->head.ts, queue->tail.ts);
-	
+	get_elem(queue, queue->state.tail_info, &queue->oper);
+	min_using_ts = queue->oper.ts;
+	get_elem(queue, queue->state.head_info, &queue->oper);
+	min_using_ts = std::min(min_using_ts, queue->oper.ts);
+
 	exclude_rank(&rand_provider, myrank);
 	while(1) {
 		if(USE_DEBUG) {
@@ -505,31 +480,27 @@ double get_min_using_ts(rma_nb_queue_t* queue) {
 
 		target = get_next_node_rand(&rand_provider);
 		if(target == UNDEFINED_RANK) {
-			elem_reset(&queue->head);
-			elem_reset(&queue->tail);
+			elem_reset(&queue->oper);
 			rand_provider_free(&rand_provider);
 			return min_using_ts;
 		}
 
-		get_head_info(queue, target, &queue->head.info);
-		get_tail_info(queue, target, &queue->tail.info);
-		if(queue->head.info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, queue->head.info, &queue->head);
-		} else {
-			queue->head.ts = min_using_ts;
+		get_head_info(queue, target, &queue->oper.info);
+		if(queue->oper.info.raw != UNDEFINED_NODE_INFO) {
+			get_elem(queue, queue->oper.info, &queue->oper);
+			min_using_ts = std::min(min_using_ts, queue->oper.ts);
 		}
-		if(queue->tail.info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, queue->tail.info, &queue->tail);
-		} else {
-			queue->tail.ts = min_using_ts;
+	
+		get_tail_info(queue, target, &queue->oper.info);
+		if(queue->oper.info.raw != UNDEFINED_NODE_INFO) {
+			get_elem(queue, queue->oper.info, &queue->oper);
+			min_using_ts = std::min(min_using_ts, queue->oper.ts);
 		}
-		min_using_ts = std::min(min_using_ts, std::min(queue->head.ts, queue->tail.ts));
 
-		get_currently_using_head(queue, target, &queue->head);
-		get_currently_using_tail(queue, target, &queue->tail);
-		if(queue->head.ts == UNDEFINED_TS) queue->head.ts = min_using_ts;
-		if(queue->tail.ts == UNDEFINED_TS) queue->tail.ts = min_using_ts;
-		min_using_ts = std::min(min_using_ts, std::min(queue->head.ts, queue->tail.ts));
+		get_currently_using_elem(queue, target, &queue->oper);
+		if(queue->oper.ts != UNDEFINED_TS) {
+			min_using_ts = std::min(min_using_ts, queue->oper.ts);
+		}
 	}
 }
 void cleaning(rma_nb_queue_t* queue, int from) {
@@ -1024,7 +995,7 @@ start:
 		queue->state.tail_info = sentinel.next_node_info;
 	}
 
-	get_elem(queue, queue->state.tail_info, &queue->tail);
+	get_elem(queue, queue->state.tail_info, &queue->oper);
 	// g_pause();
 
 	// int hops = 0;
@@ -1035,19 +1006,19 @@ start:
 		// }
 		// ++hops;
 
-		if (queue->tail.state == NODE_ACQUIRED) {
-			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
+		if (queue->oper.state == NODE_ACQUIRED) {
+			if (queue->oper.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_ts(new_elem, queue->ts_offset);
-				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
+				if (set_next_node_info(queue, queue->oper.info, new_elem->info, undefined_node_info)) {
 					record(enq_hopping_start, clock(), TIMING_ENQ_HOPPING);
 
-					get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
-					if (queue->tail.state == NODE_DELETED) {
-						bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
+					get_elem(queue, queue->oper.info, &queue->oper); // refresh tail
+					if (queue->oper.state == NODE_DELETED) {
+						bcast_tail_head_info(queue, *new_elem, queue->oper.info.parsed.rank);
 					} else {
 						bcast_tail_info(queue, *new_elem, myrank);
 					}
-					elem_reset(&queue->tail);
+					elem_reset(&queue->oper);
 					end_epoch_all(queue->win);
 					if (USE_DEBUG) {
 						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
@@ -1056,20 +1027,20 @@ start:
 					record(enq_overall_start, clock(), TIMING_ENQ_OVERALL);
 					return CODE_SUCCESS;
 				}
-				get_elem(queue, queue->tail.info, &queue->tail); // refresh tail
+				get_elem(queue, queue->oper.info, &queue->oper); // refresh tail
 			}
-			get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
+			get_elem(queue, queue->oper.next_node_info, &queue->oper); // move next
 			continue;
 		}
 
-		if (queue->tail.state == NODE_DELETED) {
-			if (queue->tail.next_node_info.raw == UNDEFINED_NODE_INFO) {
+		if (queue->oper.state == NODE_DELETED) {
+			if (queue->oper.next_node_info.raw == UNDEFINED_NODE_INFO) {
 				set_ts(new_elem, queue->ts_offset);
-				if (set_next_node_info(queue, queue->tail.info, new_elem->info, undefined_node_info)) {
+				if (set_next_node_info(queue, queue->oper.info, new_elem->info, undefined_node_info)) {
 					record(enq_hopping_start, clock(), TIMING_ENQ_HOPPING);
 
-					bcast_tail_head_info(queue, *new_elem, queue->tail.info.parsed.rank);
-					elem_reset(&queue->tail);
+					bcast_tail_head_info(queue, *new_elem, queue->oper.info.parsed.rank);
+					elem_reset(&queue->oper);
 					end_epoch_all(queue->win);
 					if (USE_DEBUG) {
 						l_str << "EXIT ENQUEUE with code " << CODE_SUCCESS << std::endl;
@@ -1079,7 +1050,7 @@ start:
 					return CODE_SUCCESS;
 				}
 			} else {
-				get_elem(queue, queue->tail.next_node_info, &queue->tail); // move next
+				get_elem(queue, queue->oper.next_node_info, &queue->oper); // move next
 				continue;
 			}
 		}
@@ -1117,7 +1088,7 @@ start:
 		queue->state.head_info = sentinel.next_node_info; // is not safe?
 	}
 
-	get_elem(queue, queue->state.head_info, &queue->head);
+	get_elem(queue, queue->state.head_info, &queue->oper);
 
 	// int hops = 0;
 	int deq_hopping_start = clock();
@@ -1127,17 +1098,17 @@ start:
 		// }
 		// ++hops;
 
-		if (queue->head.state == NODE_ACQUIRED) {
-			if (set_state(queue, queue->head.info, node_state_deleted, node_state_acquired)) {
+		if (queue->oper.state == NODE_ACQUIRED) {
+			if (set_state(queue, queue->oper.info, node_state_deleted, node_state_acquired)) {
 				record(deq_hopping_start, clock(), TIMING_DEQ_HOPPING);
-				*value = queue->head.value;
-				get_elem(queue, queue->head.info, &queue->head); // refresh same head
-				if (queue->head.next_node_info.raw != UNDEFINED_NODE_INFO) {
+				*value = queue->oper.value;
+				get_elem(queue, queue->oper.info, &queue->oper); // refresh same head
+				if (queue->oper.next_node_info.raw != UNDEFINED_NODE_INFO) {
 					elem_t next_head;
-					get_elem(queue, queue->head.next_node_info, &next_head);
+					get_elem(queue, queue->oper.next_node_info, &next_head);
 					bcast_head_info(queue, next_head, myrank);
 				}
-				elem_reset(&queue->head);
+				elem_reset(&queue->oper);
 				end_epoch_all(queue->win);
 				if (USE_DEBUG) {
 					l_str << "EXIT DEQUEUE with code " << CODE_SUCCESS << ", value is " << *value << std::endl;
@@ -1146,16 +1117,16 @@ start:
 				record(deq_overall_start, clock(), TIMING_DEQ_OVERALL);
 				return CODE_SUCCESS;
 			}
-			get_elem(queue, queue->head.info, &queue->head); // refresh same head
+			get_elem(queue, queue->oper.info, &queue->oper); // refresh same head
 		}
 
-		if (queue->head.state == NODE_DELETED) {
-			if (queue->head.next_node_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, queue->head.next_node_info, &queue->head); // move next
+		if (queue->oper.state == NODE_DELETED) {
+			if (queue->oper.next_node_info.raw != UNDEFINED_NODE_INFO) {
+				get_elem(queue, queue->oper.next_node_info, &queue->oper); // move next
 				continue;
 			} else {
 				record(deq_hopping_start, clock(), TIMING_DEQ_HOPPING);
-				elem_reset(&queue->head);
+				elem_reset(&queue->oper);
 				end_epoch_all(queue->win);
 				if (USE_DEBUG) {
 					l_str << "EXIT DEQUEUE with code " << CODE_QUEUE_EMPTY << std::endl;
@@ -1294,19 +1265,19 @@ std::string print_attributes(rma_nb_queue_t* queue) {
 		s << "\tsentinel:\n\t\t" << print(queue->sentinel) << std::endl;
 	}
 
-	s << "\thead_dl:\t" << queue->headdisp_local << std::endl;
+	s << "\thead_dl:\t" << queue->operdisp_local << std::endl;
 	s << "\thead_ds:\t";
 	for (int i = 0; i < queue->n_proc; ++i) {
-		s << queue->headdisp[i] << " ";
+		s << queue->operdisp[i] << " ";
 	}
-	s << "\n\thead:\t" << print(queue->head) << std::endl;
+	s << "\n\thead:\t" << print(queue->oper) << std::endl;
 
-	s << "\ttail_dl:\t" << queue->taildisp_local << std::endl;
+	s << "\ttail_dl:\t" << queue->operdisp_local << std::endl;
 	s << "\ttail_ds:\t";
 	for (int i = 0; i < queue->n_proc; ++i) {
-		s << queue->taildisp[i] << " ";
+		s << queue->operdisp[i] << " ";
 	}
-	s << "\n\ttail:\t" << print(queue->tail) << std::endl;
+	s << "\n\ttail:\t" << print(queue->oper) << std::endl;
 
 	s << "\tcomm:\t" << queue->comm << std::endl;
 	s << "\tn_proc:\t" << queue->n_proc << std::endl;
@@ -1754,9 +1725,9 @@ bool test_enq_deq_multiple_proc(int size_per_node, int num_of_ops_per_node, MPI_
 	log_(l_str);
 
 	val_t value;
-	int start, end;
+	long long start, end;
 	double result_time;
-	int start_own, end_own;
+	long long start_own, end_own;
 	double result_time_own;
 
 	test_result result;
@@ -1878,7 +1849,7 @@ void test_complex(int size_per_node, int num_of_ops_per_node) {
 	log_("EXITING TEST_COMPLEX\n");
 }
 void tests(int argc, char** argv) {
-	int size_per_node = 150000;
+	int size_per_node = 50000;
 	int num_of_ops_per_node = 25000;
 	int n_proc;
 	int test_calls = 0;
@@ -1892,10 +1863,6 @@ void tests(int argc, char** argv) {
 	// mpi_call_counter_init(&mpi_call_counter, n_proc);
 
 	submit_hostname(MPI_COMM_WORLD);
-	if (USE_TIMINGS) {
-		l_str << "timings init: " << print(&timings);
-		log_(l_str);
-	}
 
 	// if(myrank == MAIN_RANK) {
 	// 	test_get_next_node_rand();
