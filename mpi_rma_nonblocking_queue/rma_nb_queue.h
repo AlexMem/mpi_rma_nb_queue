@@ -63,13 +63,9 @@ typedef struct {
 	elem_t sentinel;			/* Sentinel element (MAIN_RANK only) */
 	MPI_Aint sentineldisp;		/* Address of sentinel in MAIN_RANK process */
 
-	elem_t head;				/* Currently using head (modifiable only by owner) */
-	MPI_Aint headdisp_local;	/* Address of head struct (local) */
-	MPI_Aint* headdisp;			/* Address of head struct (all processes) */
-
-	elem_t tail;				/* Currently using tail (modifiable only by owner) */
-	MPI_Aint taildisp_local;	/* Address of tail struct (local) */
-	MPI_Aint* taildisp;			/* Address of tail struct (all processes) */
+	elem_t oper;				/* Currently using elem (modifiable only by owner) */
+	MPI_Aint operdisp_local;	/* Address of currently using elem struct (local) */
+	MPI_Aint* operdisp;			/* Address of currently using elem struct (all processes) */
 
 	MPI_Win win;                /* RMA access window */
 	MPI_Comm comm;              /* Communicator for the queue distribution */
