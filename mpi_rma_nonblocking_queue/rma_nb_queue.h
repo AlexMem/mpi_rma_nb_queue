@@ -96,8 +96,6 @@ typedef struct bcast_meta_t {
 	queue_state_t state;
 	u_node_info_t head_info;
 	u_node_info_t tail_info;
-	elem_t head;
-	elem_t tail;
 } bcast_meta_t;
 
 

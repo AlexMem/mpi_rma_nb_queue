@@ -707,8 +707,8 @@ int bcastpart_head_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_m
 	do {
 		get_head_info(queue, target, &meta->head_info);
 		if (meta->head_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->head_info, &meta->head);
-			if (elem->ts < meta->head.ts) return CODE_ERROR;
+			get_elem(queue, meta->head_info, &queue->oper);
+			if (elem->ts < queue->oper.ts) return CODE_ERROR;
 		}
 	} while (set_head_info(queue, target, elem->info, meta->head_info) != CODE_SUCCESS);
 
@@ -718,8 +718,8 @@ int bcastpart_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bcast_m
 	do {
 		get_tail_info(queue, target, &meta->tail_info);
 		if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-			get_elem(queue, meta->tail_info, &meta->tail);
-			if (elem->ts < meta->tail.ts) return CODE_ERROR;
+			get_elem(queue, meta->tail_info, &queue->oper);
+			if (elem->ts < queue->oper.ts) return CODE_ERROR;
 		}
 	} while (set_tail_info(queue, target, elem->info, meta->tail_info) != CODE_SUCCESS);
 
@@ -730,8 +730,8 @@ int bcastpart_head_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bc
 		do {
 			get_head_info(queue, target, &meta->head_info);
 			if(meta->head_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->head_info, &meta->head);
-				if (elem->ts < meta->head.ts) {
+				get_elem(queue, meta->head_info, &queue->oper);
+				if (elem->ts < queue->oper.ts) {
 					meta->should_update_head = false;
 					break;
 				}
@@ -744,8 +744,8 @@ int bcastpart_head_tail_info(rma_nb_queue_t* queue, int target, elem_t* elem, bc
 		do {
 			get_tail_info(queue, target, &meta->tail_info);
 			if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->tail_info, &meta->tail);
-				if (elem->ts < meta->tail.ts) {
+				get_elem(queue, meta->tail_info, &queue->oper);
+				if (elem->ts < queue->oper.ts) {
 					meta->should_update_tail = false;
 					break;
 				}
@@ -763,8 +763,8 @@ int bcastpart_tail_head_info(rma_nb_queue_t* queue, int target, elem_t* elem, bc
 		do {
 			get_tail_info(queue, target, &meta->tail_info);
 			if (meta->tail_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->tail_info, &meta->tail);
-				if (elem->ts < meta->tail.ts) {
+				get_elem(queue, meta->tail_info, &queue->oper);
+				if (elem->ts < queue->oper.ts) {
 					meta->should_update_tail = false;
 					break;
 				}
@@ -777,8 +777,8 @@ int bcastpart_tail_head_info(rma_nb_queue_t* queue, int target, elem_t* elem, bc
 		do {
 			get_head_info(queue, target, &meta->head_info);
 			if(meta->head_info.raw != UNDEFINED_NODE_INFO) {
-				get_elem(queue, meta->head_info, &meta->head);
-				if (elem->ts < meta->head.ts) {
+				get_elem(queue, meta->head_info, &queue->oper);
+				if (elem->ts < queue->oper.ts) {
 					meta->should_update_head = false;
 					break;
 				}
@@ -803,20 +803,6 @@ int bcast_node_info_template(rma_nb_queue_t* queue, elem_t* elem, int priority_r
 	if (USE_DEBUG) {
 		l_str << "bcasting elem " << print(*elem) << std::endl;
 		log_(l_str);
-	}
-
-	if (priority_rank != myrank) {	// send to priority rank, if priority is myrank - skip this step
-		if (USE_DEBUG) {
-			l_str << "bcasting to priority " << priority_rank << std::endl;
-			log_(l_str);
-		}
-		op_res = meta->bcast_method(queue, priority_rank, elem, meta);
-		if(op_res == CODE_ERROR) {
-			rand_provider_free(&provider);
-			record(bcast_overall_start, clock(), TIMING_BCAST_OVERALL);
-			return CODE_PARTLY_SUCCESS;
-		}
-		exclude_rank(&provider, priority_rank);
 	}
 
 	if (USE_DEBUG) {
@@ -1011,13 +997,7 @@ start:
 				set_ts(new_elem, queue->ts_offset);
 				if (set_next_node_info(queue, queue->oper.info, new_elem->info, undefined_node_info)) {
 					record(enq_hopping_start, clock(), TIMING_ENQ_HOPPING);
-
-					get_elem(queue, queue->oper.info, &queue->oper); // refresh tail
-					if (queue->oper.state == NODE_DELETED) {
-						bcast_tail_head_info(queue, *new_elem, queue->oper.info.parsed.rank);
-					} else {
-						bcast_tail_info(queue, *new_elem, myrank);
-					}
+					bcast_tail_info(queue, *new_elem, myrank);
 					elem_reset(&queue->oper);
 					end_epoch_all(queue->win);
 					if (USE_DEBUG) {
@@ -1038,7 +1018,6 @@ start:
 				set_ts(new_elem, queue->ts_offset);
 				if (set_next_node_info(queue, queue->oper.info, new_elem->info, undefined_node_info)) {
 					record(enq_hopping_start, clock(), TIMING_ENQ_HOPPING);
-
 					bcast_tail_head_info(queue, *new_elem, queue->oper.info.parsed.rank);
 					elem_reset(&queue->oper);
 					end_epoch_all(queue->win);
