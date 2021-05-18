@@ -329,9 +329,14 @@ int get_queue_state(rma_nb_queue_t* queue, int target, queue_state_t* queue_stat
 	// 	return CODE_SUCCESS;
 	// } else {
 		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
-		int op_res = MPI_Get_accumulate(queue_state, sizeof(queue_state_t), MPI_BYTE,
-										queue_state, sizeof(queue_state_t), MPI_BYTE,
-										target, queue->statedisp[target], sizeof(queue_state_t), MPI_BYTE,
+		// int op_res = MPI_Get_accumulate(queue_state, sizeof(queue_state_t), MPI_BYTE,
+		// 								queue_state, sizeof(queue_state_t), MPI_BYTE,
+		// 								target, queue->statedisp[target], sizeof(queue_state_t), MPI_BYTE,
+		// 								MPI_NO_OP, queue->win);
+		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
+		int op_res = MPI_Get_accumulate(queue_state, 2, MPI_LONG_LONG,
+										queue_state, 2, MPI_LONG_LONG,
+										target, queue->statedisp[target], 2, MPI_LONG_LONG,
 										MPI_NO_OP, queue->win);
 		return (op_res == MPI_SUCCESS) ? CODE_SUCCESS : CODE_ERROR;
 	// }
@@ -352,10 +357,19 @@ int get_head_info(rma_nb_queue_t* queue, int target, u_node_info_t* head_info) {
 		}
 		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
 
-		int op_res = MPI_Get_accumulate(head_info, sizeof(queue_state_t), MPI_BYTE,
-										head_info, sizeof(queue_state_t), MPI_BYTE,
-										target, MPI_Aint_add(queue->statedisp[target], offsets.qs_head), sizeof(queue_state_t), MPI_BYTE,
-										MPI_NO_OP, queue->win);
+		// int op_res = MPI_Get_accumulate(head_info, sizeof(u_node_info_t), MPI_BYTE,
+		// 								head_info, sizeof(u_node_info_t), MPI_BYTE,
+		// 								target, MPI_Aint_add(queue->statedisp[target], offsets.qs_head), sizeof(u_node_info_t), MPI_BYTE,
+		// 								MPI_NO_OP, queue->win);
+
+		// int op_res = MPI_Get_accumulate(head_info, 1, MPI_LONG_LONG,
+		// 								head_info, 1, MPI_LONG_LONG,
+		// 								target, MPI_Aint_add(queue->statedisp[target], offsets.qs_head), 1, MPI_LONG_LONG,
+		// 								MPI_NO_OP, queue->win);
+
+		int op_res = MPI_Fetch_and_op(head_info, head_info, MPI_LONG_LONG,
+									  target, MPI_Aint_add(queue->statedisp[target], offsets.qs_head),
+									  MPI_NO_OP, queue->win);
 		MPI_Win_flush(target, queue->win);
 
 		if (USE_DEBUG) {
@@ -381,10 +395,18 @@ int get_tail_info(rma_nb_queue_t* queue, int target, u_node_info_t* tail_info) {
 		}
 		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
 
-		int op_res = MPI_Get_accumulate(tail_info, sizeof(queue_state_t), MPI_BYTE,
-										tail_info, sizeof(queue_state_t), MPI_BYTE,
-										target, MPI_Aint_add(queue->statedisp[target], offsets.qs_tail), sizeof(queue_state_t), MPI_BYTE,
-										MPI_NO_OP, queue->win);
+		// int op_res = MPI_Get_accumulate(tail_info, sizeof(u_node_info_t), MPI_BYTE,
+		// 								tail_info, sizeof(u_node_info_t), MPI_BYTE,
+		// 								target, MPI_Aint_add(queue->statedisp[target], offsets.qs_tail), sizeof(u_node_info_t), MPI_BYTE,
+		// 								MPI_NO_OP, queue->win);
+
+		// int op_res = MPI_Get_accumulate(tail_info, 1, MPI_LONG_LONG,
+		// 								tail_info, 1, MPI_LONG_LONG,
+		// 								target, MPI_Aint_add(queue->statedisp[target], offsets.qs_tail), 1, MPI_LONG_LONG,
+		// 								MPI_NO_OP, queue->win);
+		int op_res = MPI_Fetch_and_op(tail_info, tail_info, MPI_LONG_LONG,
+									  target, MPI_Aint_add(queue->statedisp[target], offsets.qs_tail),
+									  MPI_NO_OP, queue->win);
 		MPI_Win_flush(target, queue->win);
 
 		if (USE_DEBUG) {
@@ -447,9 +469,14 @@ int get_currently_using_elem(rma_nb_queue_t* queue, int target, elem_t* elem) {
 	}
 	if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, target);
 
-	op_res = MPI_Get_accumulate(elem, sizeof(elem_t), MPI_BYTE,
-								elem, sizeof(elem_t), MPI_BYTE,
-								target, queue->operdisp[target], sizeof(elem_t), MPI_BYTE,
+	// op_res = MPI_Get_accumulate(elem, sizeof(elem_t), MPI_BYTE,
+	// 							elem, sizeof(elem_t), MPI_BYTE,
+	// 							target, queue->operdisp[target], sizeof(elem_t), MPI_BYTE,
+	// 							MPI_NO_OP, queue->win);
+
+	op_res = MPI_Get_accumulate(elem, 4, MPI_LONG_LONG,
+								elem, 4, MPI_LONG_LONG,
+								target, queue->operdisp[target], 4, MPI_LONG_LONG,
 								MPI_NO_OP, queue->win);
 	MPI_Win_flush(target, queue->win);
 
@@ -564,9 +591,13 @@ int get_elem(rma_nb_queue_t* queue, u_node_info_t elem_info, elem_t* elem) {
 		}
 		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, elem_info.parsed.rank);
 
-		op_res = MPI_Get_accumulate(elem, sizeof(elem_t), MPI_BYTE,
-									elem, sizeof(elem_t), MPI_BYTE,
-									elem_info.parsed.rank, get_elem_disp(queue, elem_info), sizeof(elem_t), MPI_BYTE,
+		// op_res = MPI_Get_accumulate(elem, sizeof(elem_t), MPI_BYTE,
+		// 							elem, sizeof(elem_t), MPI_BYTE,
+		// 							elem_info.parsed.rank, get_elem_disp(queue, elem_info), sizeof(elem_t), MPI_BYTE,
+		// 							MPI_NO_OP, queue->win);
+		op_res = MPI_Get_accumulate(elem, 4, MPI_LONG_LONG,
+									elem, 4, MPI_LONG_LONG,
+									elem_info.parsed.rank, get_elem_disp(queue, elem_info), 4, MPI_LONG_LONG,
 									MPI_NO_OP, queue->win);
 		MPI_Win_flush(elem_info.parsed.rank, queue->win);
 
@@ -595,9 +626,14 @@ int get_sentinel(rma_nb_queue_t* queue, elem_t* sent) {
 		}
 		if (USE_MPI_CALLS_COUNTING) count(&mpi_call_counter, MAIN_RANK);
 
-		op_res = MPI_Get_accumulate(sent, sizeof(elem_t), MPI_BYTE,
-									sent, sizeof(elem_t), MPI_BYTE,
-									MAIN_RANK, queue->sentineldisp, sizeof(elem_t), MPI_BYTE,
+		// op_res = MPI_Get_accumulate(sent, sizeof(elem_t), MPI_BYTE,
+		// 							sent, sizeof(elem_t), MPI_BYTE,
+		// 							MAIN_RANK, queue->sentineldisp, sizeof(elem_t), MPI_BYTE,
+		// 							MPI_NO_OP, queue->win);
+
+		op_res = MPI_Get_accumulate(sent, 4, MPI_LONG_LONG,
+									sent, 4, MPI_LONG_LONG,
+									MAIN_RANK, queue->sentineldisp, 4, MPI_LONG_LONG,
 									MPI_NO_OP, queue->win);
 		MPI_Win_flush(MAIN_RANK, queue->win);
 
@@ -1433,7 +1469,7 @@ bool check_results(rma_nb_queue_t* queue, test_result result) {
 		MPI_Send(&result, sizeof(test_result), MPI_BYTE,
 				 MAIN_RANK, 0, queue->comm);
 	}
-	MPI_Bcast(&success, 1, sizeof(bool)*MPI_BYTE, MAIN_RANK, queue->comm);
+	MPI_Bcast(&success, sizeof(bool), MPI_BYTE, MAIN_RANK, queue->comm);
 	return success;
 }
 void check_using_memory_model(rma_nb_queue_t* queue) {
