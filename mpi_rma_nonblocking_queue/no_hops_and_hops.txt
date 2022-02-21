@@ -1,0 +1,9 @@
+np_hops avg = 82948.11 ops/s
+hops_1 avg = 51600.8 ops/s
+hops_2 avg = 75110 ops/s
+hops_3 avg = 80806.6 ops/s
+hops_4 avg = 79852.3 ops/s
+hops_5 avg = 82364 ops/s
+hops_10 avg = 81257.3 ops/s
+hops_15 avg = 82882 ops/s
+hops_20 avg = 82816.5 ops/s

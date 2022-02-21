@@ -20,6 +20,8 @@
 #define NODE_ACQUIRED 1
 #define NODE_DELETED 2
 
+#define MAX_NUM_OF_HOPS 50
+
 typedef int val_t;
 
 typedef union {
@@ -60,13 +62,9 @@ typedef struct {
 	elem_t sentinel;			/* Sentinel element (MAIN_RANK only) */
 	MPI_Aint sentineldisp;		/* Address of sentinel in MAIN_RANK process */
 
-	elem_t head;				/* Currently using head */
-	MPI_Aint headdisp_local;	/* Address of head struct (local) */
-	MPI_Aint* headdisp;			/* Address of head struct (all processes) */
-
-	elem_t tail;				/* Currently using tail */
-	MPI_Aint taildisp_local;	/* Address of tail struct (local) */
-	MPI_Aint* taildisp;			/* Address of tail struct (all processes) */
+	elem_t oper;				/* Currently operating element */
+	MPI_Aint operdisp_local;	/* Address of currently using element struct (local) */
+	MPI_Aint* operdisp;			/* Address of currently using element struct (all processes) */
 
 	MPI_Win win;                /* RMA access window */
 	MPI_Comm comm;              /* Communicator for the queue distribution */
@@ -98,8 +96,6 @@ typedef struct bcast_meta_t {
 	queue_state_t state;
 	u_node_info_t head_info;
 	u_node_info_t tail_info;
-	elem_t head;
-	elem_t tail;
 } bcast_meta_t;
 
 
